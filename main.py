@@ -2,6 +2,7 @@ import os
 import re
 import json
 import datetime
+import asyncio
 from datetime import timezone, timedelta
 from telethon import TelegramClient
 from telethon.sessions import StringSession
@@ -19,10 +20,7 @@ SESSION_STRING = os.environ['TELEGRAM_SESSION_STRING']
 KST = timezone(timedelta(hours=9))
 
 def sanitize_filename(name):
-    """
-    파일명에 사용할 수 없는 특수문자 제거 및 공백 정리
-    에러를 방지하고 아이패드에서 깔끔하게 보이도록 정제합니다.
-    """
+    """파일명에 사용할 수 없는 특수문자 제거 및 공백 정리"""
     name = re.sub(r'[\\/*?:"<>|]', "", str(name))
     return name.strip()
 
@@ -64,32 +62,34 @@ async def main():
                 # [데이터 수집] PDF 파일이 첨부된 경우
                 if message.file and message.file.ext == '.pdf':
                     original_filename = message.file.name or 'document.pdf'
-                    
-                    # PDF 파일명 자동화: "[채널명] 원래파일명.pdf" 구조로 직관성 극대화
                     safe_filename = f"[{clean_chat_name}] {sanitize_filename(original_filename)}"
                     filepath = os.path.join('downloads', safe_filename)
                     
-                    print(f"PDF 다운로드 중: {safe_filename}")
-                    await message.download_media(file=filepath)
-                    upload_file_paths.append(filepath)
+                    print(f"PDF 다운로드 시도: {safe_filename}")
+                    
+                    # 과부하 방지 및 에러 무시 로직 추가 (try-except)
+                    try:
+                        await message.download_media(file=filepath)
+                        upload_file_paths.append(filepath)
+                        # 텔레그램 서버 차단 방지용 2초 대기
+                        await asyncio.sleep(2) 
+                    except Exception as e:
+                        print(f"⚠️ PDF 다운로드 실패 (건너뜀) - {safe_filename} / 사유: {e}")
+                        continue
 
     await client.disconnect()
 
     # 3. 엑셀 정제 및 AI 복붙용 텍스트 생성
     if messages_data:
         df = pd.DataFrame(messages_data)
-        # 시간순(과거->최신)으로 정렬하여 AI가 시간 흐름을 읽을 수 있게 함
         df = df.iloc[::-1].reset_index(drop=True)
         
-        # [결과물 1] 엑셀 백업본 저장
         excel_path = 'downloads/01_오늘의_대화기록_전체본.xlsx'
         df.to_excel(excel_path, index=False)
         upload_file_paths.append(excel_path)
         
-        # [결과물 2] AI 프롬프트 일체형 텍스트 저장
         prompt_path = 'downloads/00_AI_요약용_복붙텍스트.txt'
         with open(prompt_path, 'w', encoding='utf-8') as f:
-            # AI에게 역할과 지시사항 부여
             f.write("너는 주식 투자 전문 애널리스트야. 아래 제공되는 텍스트는 지난 24시간 동안 여러 투자 채널에서 수집된 대화 내역이야.\n")
             f.write("데이터의 양이 방대하니, 단순 인사말이나 광고는 철저히 무시하고 '시장을 관통하는 핵심 투자 정보'만 아래 포맷으로 요약해줘.\n\n")
             f.write("1. 거시 경제 및 증시 시황 (금리, 환율, 지수 등)\n")
@@ -99,7 +99,6 @@ async def main():
             f.write("--- 데이터 시작 ---\n\n")
             
             for _, row in df.iterrows():
-                # 출처와 시간을 명확히 구분하여 AI 할루시네이션(거짓 정보) 방지
                 f.write(f"[{row['채널명']} | {row['발송 시간']}]\n{row['내용']}\n")
                 f.write("-" * 40 + "\n\n")
                 
@@ -124,7 +123,6 @@ def upload_to_google_drive(folder_name, file_paths):
     service = build('drive', 'v3', credentials=creds)
     parent_id = os.environ.get('GOOGLE_DRIVE_PARENT_FOLDER_ID')
     
-    # 오늘 날짜의 메인 폴더 생성
     folder_metadata = {
         'name': folder_name,
         'mimeType': 'application/vnd.google-apps.folder'
@@ -136,7 +134,6 @@ def upload_to_google_drive(folder_name, file_paths):
     folder_id = folder.get('id')
     print(f"새 폴더 생성 완료: {folder_name}")
     
-    # 수집된 모든 파일 순차 업로드
     for path in file_paths:
         filename = os.path.basename(path)
         media = MediaFileUpload(path, resumable=True)
@@ -151,5 +148,4 @@ def upload_to_google_drive(folder_name, file_paths):
             print(f"❌ 업로드 실패 ({filename}): {e}")
 
 if __name__ == '__main__':
-    import asyncio
     asyncio.run(main())
