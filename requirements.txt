@@ -1,0 +1,6 @@
+selenium>=4.21.0
+beautifulsoup4
+pandas
+openpyxl
+requests
+telethon
