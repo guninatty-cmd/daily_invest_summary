@@ -82,10 +82,16 @@ def scrape_naver_news(today_str: str, yesterday_str: str, yesterday_param: str) 
     targets = build_targets(today_str, yesterday_str, yesterday_param)
     driver = _build_driver()
     article_data_1st = []
-    titles_seen = set()
 
     try:
         for publisher, info in targets.items():
+            # Reset the dedup set per publisher (was global before).
+            # Bug: a shared titles_seen across all outlets meant that once an
+            # earlier outlet (e.g. 매일경제) collected a wire-style headline that
+            # other outlets also ran verbatim, later outlets in dict order
+            # (파이낸셜뉴스, 머니투데이) had that headline silently dropped, causing
+            # systematically sparser results for outlets processed later.
+            titles_seen = set()
             print(f"📰 [{publisher}] 수집 중...")
             url = info["url"]
             max_scroll = info["max_scroll"]
