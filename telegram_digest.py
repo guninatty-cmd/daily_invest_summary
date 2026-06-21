@@ -2,6 +2,7 @@
 텔레그램 메시지 / PDF 수집 모듈
 """
 import os
+import hashlib
 import datetime
 from datetime import timezone, timedelta
 
@@ -28,6 +29,7 @@ async def run_telegram_digest(download_dir: str = "downloads"):
 
     messages_data = []
     pdf_filepaths = []
+    seen_hashes = set()  # content-hash dedup: same PDF re-shared across channels
 
     os.makedirs(download_dir, exist_ok=True)
 
@@ -62,7 +64,21 @@ async def run_telegram_digest(download_dir: str = "downloads"):
 
                     try:
                         await message.download_media(file=filepath)
-                        pdf_filepaths.append(filepath)
+
+                        # Content-hash dedup: the same report is often forwarded
+                        # into multiple channels/groups under a different filename.
+                        # Without this check, both copies got summarized twice
+                        # downstream. Hash the actual bytes, not the filename.
+                        with open(filepath, 'rb') as fh:
+                            file_hash = hashlib.sha256(fh.read()).hexdigest()
+
+                        if file_hash in seen_hashes:
+                            print(f"⏭️  중복 PDF 건너뜀 (동일 내용, 다른 채널/파일명): {safe_filename}")
+                            os.remove(filepath)
+                        else:
+                            seen_hashes.add(file_hash)
+                            pdf_filepaths.append(filepath)
+
                         await __import__("asyncio").sleep(2)
                     except Exception as e:
                         print(f"⚠️ PDF 다운로드 실패 (건너뜀): {e}")
