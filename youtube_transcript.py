@@ -72,6 +72,7 @@ def clean_vtt(vtt_text: str) -> str:
 
 
 def download_subtitle(video_url: str, video_id: str, temp_dir: str) -> str | None:
+    cookies_file = os.environ.get('YOUTUBE_COOKIES_FILE', '')
     ydl_opts = {
         'skip_download': True,
         'writeautomaticsub': True,
@@ -81,6 +82,8 @@ def download_subtitle(video_url: str, video_id: str, temp_dir: str) -> str | Non
         'quiet': True,
         'no_warnings': True,
     }
+    if cookies_file and os.path.exists(cookies_file):
+        ydl_opts['cookiefile'] = cookies_file
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([video_url])
