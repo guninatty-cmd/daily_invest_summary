@@ -55,6 +55,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/processed_pdf_hashes.txt
+          git add processed_pdf_hashes.txt
           git diff --cached --quiet || git commit -m "chore: update processed PDF hashes [skip ci]"
           git push
