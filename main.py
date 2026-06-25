@@ -28,7 +28,7 @@ from stock_prices import collect_stock_prices
 
 KST = timezone(timedelta(hours=9))
 DOWNLOAD_DIR = "downloads"
-PROCESSED_HASHES_FILE = "data/processed_pdf_hashes.txt"
+PROCESSED_HASHES_FILE = "processed_pdf_hashes.txt"
 
 
 # ──────────────────────────────────────────────
@@ -45,7 +45,6 @@ def load_processed_hashes() -> set[str]:
 
 def save_processed_hashes(hashes: set[str]):
     """처리된 PDF 해시 목록 저장 (GitHub Actions가 커밋)"""
-    Path(PROCESSED_HASHES_FILE).parent.mkdir(parents=True, exist_ok=True)
     Path(PROCESSED_HASHES_FILE).write_text('\n'.join(sorted(hashes)), encoding='utf-8')
 
 
