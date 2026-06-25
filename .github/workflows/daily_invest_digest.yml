@@ -43,10 +43,13 @@ jobs:
           sudo chmod a+rx /usr/local/bin/yt-dlp
 
       - name: Decode YouTube cookies
-        if: ${{ secrets.YOUTUBE_COOKIES != '' }}
+        env:
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
         run: |
-          echo "${{ secrets.YOUTUBE_COOKIES }}" | base64 -d > /tmp/youtube_cookies.txt
-          echo "YOUTUBE_COOKIES_FILE=/tmp/youtube_cookies.txt" >> $GITHUB_ENV
+          if [ -n "$YOUTUBE_COOKIES" ]; then
+            echo "$YOUTUBE_COOKIES" | base64 -d > /tmp/youtube_cookies.txt
+            echo "YOUTUBE_COOKIES_FILE=/tmp/youtube_cookies.txt" >> $GITHUB_ENV
+          fi
 
       - name: Run pipeline
         env:
