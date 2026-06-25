@@ -53,6 +53,9 @@ def filter_new_pdfs(pdf_paths: list[str], known_hashes: set[str]) -> tuple[list[
     new_paths = []
     new_hashes = set()
     for path in pdf_paths:
+        if not os.path.exists(path):
+            # telegram_digest.py의 인메모리 중복 제거로 이미 삭제된 파일
+            continue
         with open(path, 'rb') as f:
             h = hashlib.sha256(f.read()).hexdigest()
         if h in known_hashes:
