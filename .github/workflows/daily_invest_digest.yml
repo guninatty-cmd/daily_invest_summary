@@ -1,35 +1,48 @@
-name: Daily Invest Digest (News + Telegram)
+name: Daily Investment Digest
 
 on:
   schedule:
-    - cron: '0 2 * * *'   # 매일 02:00 UTC = 11:00 KST
+    # UTC 02:00 = KST 11:00 (백업용 - cron-job.org가 주 트리거)
+    - cron: '0 2 * * 1-5'
   workflow_dispatch:
+    inputs:
+      triggered_by:
+        description: 'Trigger source (cron-job.org or manual)'
+        required: false
+        default: 'manual'
 
 jobs:
-  run-digest:
+  run-pipeline:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # data/processed_pdf_hashes.txt 커밋용
+
     steps:
-      - name: 저장소 코드 가져오기
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: 파이썬 환경 설정
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: 크롬 설치 (네이버 뉴스 스크래핑용)
-        run: |
-          wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
-          echo "deb http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
-          sudo apt-get update -y
-          sudo apt-get install -y google-chrome-stable
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
-      - name: 필수 라이브러리 설치
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+      - name: Install dependencies
+        run: pip install -r requirements.txt
 
-      - name: 통합 파이프라인 실행 (뉴스 수집 + 텔레그램 수집 + 엑셀 병합 + 드라이브 업로드)
+      - name: Install yt-dlp binary
+        run: |
+          sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+          sudo chmod a+rx /usr/local/bin/yt-dlp
+
+      - name: Run pipeline
         env:
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
@@ -37,3 +50,11 @@ jobs:
           GAS_WEBHOOK_URL: ${{ secrets.GAS_WEBHOOK_URL }}
           GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
         run: python main.py
+
+      - name: Commit updated PDF hashes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/processed_pdf_hashes.txt
+          git diff --cached --quiet || git commit -m "chore: update processed PDF hashes [skip ci]"
+          git push
