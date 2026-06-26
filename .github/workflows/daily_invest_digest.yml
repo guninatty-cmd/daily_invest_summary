@@ -58,7 +58,6 @@ jobs:
           TELEGRAM_SESSION_STRING: ${{ secrets.TELEGRAM_SESSION_STRING }}
           GAS_WEBHOOK_URL: ${{ secrets.GAS_WEBHOOK_URL }}
           GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
-          YOUTUBE_COOKIES_FILE: ${{ env.YOUTUBE_COOKIES_FILE }}
         run: python main.py
 
       - name: Commit updated PDF hashes
