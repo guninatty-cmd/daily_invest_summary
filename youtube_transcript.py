@@ -5,6 +5,8 @@
 """
 import os
 import re
+import base64
+import tempfile
 import datetime
 import shutil
 import feedparser
@@ -71,15 +73,37 @@ def clean_vtt(vtt_text: str) -> str:
     return text.strip()
 
 
+_COOKIES_TMP_FILE = None  # 모듈 레벨 캐시 (run 중 한 번만 디코딩)
+
+def _get_cookies_file() -> str:
+    """YOUTUBE_COOKIES (base64) 환경변수를 Python에서 직접 디코딩해 임시 파일 반환"""
+    global _COOKIES_TMP_FILE
+    if _COOKIES_TMP_FILE and os.path.exists(_COOKIES_TMP_FILE):
+        return _COOKIES_TMP_FILE
+
+    cookies_b64 = os.environ.get('YOUTUBE_COOKIES', '').strip()
+    if not cookies_b64:
+        print("  [쿠키] YOUTUBE_COOKIES 환경변수 없음 — 쿠키 없이 시도")
+        return ''
+
+    try:
+        # certutil 헤더/푸터 제거 + \r 제거 후 base64 디코딩
+        lines = cookies_b64.replace('\r', '').split('\n')
+        lines = [l for l in lines if l.strip() and 'CERTIFICATE' not in l]
+        decoded = base64.b64decode(''.join(lines))
+        tmp = tempfile.NamedTemporaryFile(mode='wb', suffix='.txt', delete=False)
+        tmp.write(decoded)
+        tmp.close()
+        _COOKIES_TMP_FILE = tmp.name
+        print(f"  [쿠키] ✅ Python 디코딩 성공: {len(decoded):,} bytes → {tmp.name}")
+        return _COOKIES_TMP_FILE
+    except Exception as e:
+        print(f"  [쿠키] ❌ Python 디코딩 실패: {e}")
+        return ''
+
+
 def download_subtitle(video_url: str, video_id: str, temp_dir: str) -> str | None:
-    cookies_file = os.environ.get('YOUTUBE_COOKIES_FILE', '')
-    if cookies_file:
-        print(f"  [쿠키] YOUTUBE_COOKIES_FILE={cookies_file}, exists={os.path.exists(cookies_file)}")
-        if os.path.exists(cookies_file):
-            size = os.path.getsize(cookies_file)
-            print(f"  [쿠키] 파일 크기: {size} bytes")
-    else:
-        print(f"  [쿠키] YOUTUBE_COOKIES_FILE 환경변수 없음 — 쿠키 없이 시도")
+    cookies_file = _get_cookies_file()
     ydl_opts = {
         'skip_download': True,
         'writeautomaticsub': True,
@@ -89,9 +113,8 @@ def download_subtitle(video_url: str, video_id: str, temp_dir: str) -> str | Non
         'quiet': True,
         'no_warnings': True,
     }
-    if cookies_file and os.path.exists(cookies_file):
+    if cookies_file:
         ydl_opts['cookiefile'] = cookies_file
-        print(f"  [쿠키] ✅ cookiefile 적용됨")
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([video_url])
