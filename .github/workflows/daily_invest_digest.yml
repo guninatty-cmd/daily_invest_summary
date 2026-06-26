@@ -42,22 +42,6 @@ jobs:
           sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
           sudo chmod a+rx /usr/local/bin/yt-dlp
 
-      - name: Decode YouTube cookies
-        env:
-          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
-        run: |
-          if [ -n "$YOUTUBE_COOKIES" ]; then
-            echo "$YOUTUBE_COOKIES" | tr -d '\r' | grep -v "CERTIFICATE" | base64 -d > /tmp/youtube_cookies.txt
-            if [ -s /tmp/youtube_cookies.txt ]; then
-              echo "YOUTUBE_COOKIES_FILE=/tmp/youtube_cookies.txt" >> $GITHUB_ENV
-              echo "✅ 쿠키 파일 생성 완료 ($(wc -c < /tmp/youtube_cookies.txt) bytes)"
-            else
-              echo "❌ 쿠키 디코딩 실패 - 파일이 비어있음"
-            fi
-          else
-            echo "⚠️ YOUTUBE_COOKIES secret 없음"
-          fi
-
       - name: Run pipeline
         env:
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
@@ -65,6 +49,7 @@ jobs:
           TELEGRAM_SESSION_STRING: ${{ secrets.TELEGRAM_SESSION_STRING }}
           GAS_WEBHOOK_URL: ${{ secrets.GAS_WEBHOOK_URL }}
           GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
         run: python main.py
 
       - name: Commit updated PDF hashes
