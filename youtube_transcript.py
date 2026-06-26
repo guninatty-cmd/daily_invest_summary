@@ -5,6 +5,7 @@
 """
 import os
 import re
+import time
 import base64
 import tempfile
 import datetime
@@ -115,20 +116,27 @@ def download_subtitle(video_url: str, video_id: str, temp_dir: str) -> str | Non
     }
     if cookies_file:
         ydl_opts['cookiefile'] = cookies_file
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([video_url])
-        vtt_files = list(Path(temp_dir).glob(f"{video_id}*.vtt"))
-        if not vtt_files:
-            print(f"  자막 없음 (자동자막 미제공 영상)")
+    for attempt in range(1, 3):  # 최대 2회 시도
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([video_url])
+            vtt_files = list(Path(temp_dir).glob(f"{video_id}*.vtt"))
+            if not vtt_files:
+                print(f"  자막 없음 (자동자막 미제공 영상)")
+                return None
+            text = clean_vtt(vtt_files[0].read_text(encoding='utf-8'))
+            for f in vtt_files:
+                f.unlink()
+            return text or None
+        except Exception as e:
+            err = str(e)
+            if 'Sign in to confirm' in err and attempt < 2:
+                print(f"  봇 감지 — {10}초 대기 후 재시도...")
+                time.sleep(10)
+                continue
+            print(f"  자막 다운로드 실패: {e}")
             return None
-        text = clean_vtt(vtt_files[0].read_text(encoding='utf-8'))
-        for f in vtt_files:
-            f.unlink()
-        return text or None
-    except Exception as e:
-        print(f"  자막 다운로드 실패: {e}")
-        return None
+    return None
 
 
 def collect_youtube_transcripts(
@@ -171,6 +179,7 @@ def collect_youtube_transcripts(
             text = download_subtitle(video['url'], video['id'], temp_dir)
             if text:
                 results.append({'title': video['title'], 'url': video['url'], 'text': text})
+            time.sleep(3)  # 영상 간 3초 딜레이 (봇 감지 회피)
 
     shutil.rmtree(temp_dir, ignore_errors=True)
     print(f"  ✔️ 유튜브 자막 {len(results)}건 수집 완료\n")
