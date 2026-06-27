@@ -2,9 +2,9 @@
 통합 투자 데이터 자동화 파이프라인 v2
 1) 네이버 뉴스(6대 경제지 당일 지면기사 + 글로벌경제 속보 전날치) 수집
 2) 텔레그램 대화(전날 24시간) + PDF(전날 하루치) 수집 — 크로스런 중복 방지
-3) 유튜브 채널 전날 영상 자막 수집 (신규)
-4) 관심 종목 전일 등락폭 수집 (신규)
-5) 뉴스+텔레그램을 엑셀로 병합
+3) 유튜브 채널 전날 영상 URL 수집 (Shorts 제외, 실제 스크립트는 Cowork NotebookLM이 추출)
+4) 관심 종목 전일 등락폭 수집
+5) 뉴스+텔레그램을 엑셀로 병합 (유튜브링크·주가데이터는 별도 시트로 추가)
 6) 모든 파일을 구글 드라이브 날짜 폴더에 업로드
 
 매일 KST 11:00 (UTC 02:00) GitHub Actions + cron-job.org 트리거
@@ -30,7 +30,6 @@ KST = timezone(timedelta(hours=9))
 DOWNLOAD_DIR = "downloads"
 PROCESSED_HASHES_FILE = "processed_pdf_hashes.txt"
 
-
 # ──────────────────────────────────────────────
 # PDF 크로스런 중복 방지
 # ──────────────────────────────────────────────
@@ -42,11 +41,9 @@ def load_processed_hashes() -> set[str]:
         return set()
     return set(line.strip() for line in p.read_text(encoding='utf-8').splitlines() if line.strip())
 
-
 def save_processed_hashes(hashes: set[str]):
     """처리된 PDF 해시 목록 저장 (GitHub Actions가 커밋)"""
     Path(PROCESSED_HASHES_FILE).write_text('\n'.join(sorted(hashes)), encoding='utf-8')
-
 
 def filter_new_pdfs(pdf_paths: list[str], known_hashes: set[str]) -> tuple[list[str], set[str]]:
     """이미 처리된 PDF 제거. 반환: (새 파일 목록, 새 해시 set)"""
@@ -54,18 +51,16 @@ def filter_new_pdfs(pdf_paths: list[str], known_hashes: set[str]) -> tuple[list[
     new_hashes = set()
     for path in pdf_paths:
         if not os.path.exists(path):
-            # telegram_digest.py의 인메모리 중복 제거로 이미 삭제된 파일
             continue
         with open(path, 'rb') as f:
             h = hashlib.sha256(f.read()).hexdigest()
         if h in known_hashes:
-            print(f"  ⏭️  크로스런 중복 PDF 건너뜀: {os.path.basename(path)}")
+            print(f" ⏭️ 크로스런 중복 PDF 건너뜀: {os.path.basename(path)}")
             os.remove(path)
         else:
             new_paths.append(path)
             new_hashes.add(h)
     return new_paths, new_hashes
-
 
 # ──────────────────────────────────────────────
 # 데이터 병합 유틸
@@ -100,6 +95,27 @@ def build_unified_dataframe(df_news: pd.DataFrame, df_telegram: pd.DataFrame) ->
     df.insert(0, "연번", range(1, len(df) + 1))
     return df
 
+def build_youtube_dataframe(yt_transcripts: list[dict]) -> pd.DataFrame:
+    """유튜브 영상 URL 목록 시트용 DataFrame"""
+    rows = [
+        {"제목": v.get("title", ""), "URL": v.get("url", "")}
+        for v in yt_transcripts
+    ]
+    return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["제목", "URL"])
+
+def build_stock_dataframe(stock_prices: list[dict]) -> pd.DataFrame:
+    """관심 종목 등락폭 시트용 DataFrame"""
+    rows = [{
+        "티커": s.get("ticker", ""),
+        "날짜": s.get("date", ""),
+        "종가($)": s.get("close", ""),
+        "전일종가($)": s.get("prev_close", ""),
+        "등락률(%)": s.get("change_pct", ""),
+        "3%이상": "⚠️" if s.get("alert") else "",
+    } for s in stock_prices]
+    return pd.DataFrame(rows) if rows else pd.DataFrame(
+        columns=["티커", "날짜", "종가($)", "전일종가($)", "등락률(%)", "3%이상"]
+    )
 
 def write_ai_summary_text(filepath: str, df_news: pd.DataFrame, df_telegram: pd.DataFrame,
                            yt_transcripts: list[dict], stock_prices: list[dict]):
@@ -119,17 +135,15 @@ def write_ai_summary_text(filepath: str, df_news: pd.DataFrame, df_telegram: pd.
             f.write("-" * 40 + "\n\n")
 
         if yt_transcripts:
-            f.write("\n--- [유튜브 채널 자막] ---\n\n")
+            f.write("\n--- [유튜브 채널 URL 목록 (스크립트는 Cowork이 별도 추출)] ---\n\n")
             for yt in yt_transcripts:
-                f.write(f"[제목] {yt['title']}\n[URL] {yt['url']}\n\n{yt['text']}\n\n")
-                f.write("=" * 50 + "\n\n")
+                f.write(f"[제목] {yt['title']}\n[URL] {yt['url']}\n\n")
 
         if stock_prices:
             f.write("\n--- [관심 종목 전일 등락폭] ---\n\n")
             for s in stock_prices:
                 alert = " ⚠️ 3%이상 등락" if s.get('alert') else ""
                 f.write(f"{s['ticker']}: ${s['close']} ({s['change_pct']:+.1f}%){alert}\n")
-
 
 # ──────────────────────────────────────────────
 # 메인
@@ -145,67 +159,64 @@ def main():
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
     print(f"📅 실행 기준 시각(KST): {now_kst.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"   - 대상 날짜: {yesterday_str} | 업로드 폴더: {folder_name}\n")
+    print(f" - 대상 날짜: {yesterday_str} | 업로드 폴더: {folder_name}\n")
 
     # ── 1. 네이버 뉴스 ──
     print("=== [1/4] 네이버 뉴스 수집 ===")
     df_news = scrape_naver_news(today_str=today_str, yesterday_str=yesterday_str, yesterday_param=yesterday_param)
-    print(f"   ✔️ 뉴스 {len(df_news)}건\n")
+    print(f" ✔️ 뉴스 {len(df_news)}건\n")
 
     # ── 2. 텔레그램 (크로스런 중복 방지 포함) ──
     print("=== [2/4] 텔레그램 수집 ===")
     known_hashes = load_processed_hashes()
-    print(f"   기존 처리된 PDF 해시: {len(known_hashes)}건")
+    print(f" 기존 처리된 PDF 해시: {len(known_hashes)}건")
     df_telegram, pdf_paths_raw = asyncio.run(run_telegram_digest(download_dir=DOWNLOAD_DIR))
     pdf_paths, new_hashes = filter_new_pdfs(pdf_paths_raw, known_hashes)
-    print(f"   ✔️ 메시지 {len(df_telegram)}건 / 새 PDF {len(pdf_paths)}건\n")
+    print(f" ✔️ 메시지 {len(df_telegram)}건 / 새 PDF {len(pdf_paths)}건\n")
 
-    # ── 3. 유튜브 자막 ──
-    print("=== [3/4] 유튜브 자막 수집 ===")
+    # ── 3. 유튜브 URL 수집 ──
+    print("=== [3/4] 유튜브 영상 URL 수집 (Shorts 제외) ===")
     yt_transcripts = collect_youtube_transcripts(download_dir=DOWNLOAD_DIR)
+    print(f" ✔️ 영상 URL {len(yt_transcripts)}건\n")
 
     # ── 4. 관심 종목 등락폭 ──
     print("=== [4/4] 관심 종목 등락폭 수집 ===")
     stock_prices = collect_stock_prices()
 
-    # ── 엑셀 병합 ──
+    # ── 엑셀 병합 (다중 시트) ──
     print("=== 파일 생성 ===")
     unified_df = build_unified_dataframe(df_news, df_telegram)
     excel_path = os.path.join(DOWNLOAD_DIR, f"{today_str}_투자데이터_통합.xlsx")
-    unified_df.to_excel(excel_path, index=False, engine='openpyxl')
-    print(f"   엑셀: {excel_path} ({len(unified_df)}행)")
+
+    with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
+        # 시트 1: 뉴스 + 텔레그램 (기존 데이터)
+        unified_df.to_excel(writer, sheet_name='뉴스_텔레그램', index=False)
+
+        # 시트 2: 유튜브 링크 (있는 경우)
+        if yt_transcripts:
+            yt_df = build_youtube_dataframe(yt_transcripts)
+            yt_df.to_excel(writer, sheet_name='유튜브링크', index=False)
+
+        # 시트 3: 관심 종목 주가 (있는 경우)
+        if stock_prices:
+            stock_df = build_stock_dataframe(stock_prices)
+            stock_df.to_excel(writer, sheet_name='주가데이터', index=False)
+
+    sheets_info = "뉴스_텔레그램"
+    if yt_transcripts:
+        sheets_info += f" + 유튜브링크({len(yt_transcripts)}건)"
+    if stock_prices:
+        sheets_info += f" + 주가데이터({len(stock_prices)}종목)"
+    print(f" 엑셀: {excel_path} | 시트: [{sheets_info}]")
 
     # ── AI 요약용 텍스트 ──
     summary_path = os.path.join(DOWNLOAD_DIR, "00_AI_요약용_복붙텍스트.txt")
     write_ai_summary_text(summary_path, df_news, df_telegram, yt_transcripts, stock_prices)
-    print(f"   요약 텍스트: {summary_path}")
-
-    # ── 유튜브 자막 파일 저장 ──
-    yt_paths = []
-    for yt in yt_transcripts:
-        safe_title = re.sub(r'[\\/:*?"<>|]', '', yt['title'])[:40].strip()
-        fname = f"[YT] {yesterday_param}_{safe_title}.txt"
-        fpath = os.path.join(DOWNLOAD_DIR, fname)
-        Path(fpath).write_text(
-            f"제목: {yt['title']}\nURL: {yt['url']}\n{'─'*60}\n\n{yt['text']}\n",
-            encoding='utf-8'
-        )
-        yt_paths.append(fpath)
-    if yt_paths:
-        print(f"   유튜브 자막 파일: {len(yt_paths)}개")
-
-    # ── 등락폭 JSON 저장 ──
-    stock_path = None
-    if stock_prices:
-        stock_path = os.path.join(DOWNLOAD_DIR, f"{yesterday_param}_등락폭.json")
-        Path(stock_path).write_text(json.dumps(stock_prices, ensure_ascii=False, indent=2), encoding='utf-8')
-        print(f"   등락폭 JSON: {stock_path}")
+    print(f" 요약 텍스트: {summary_path}")
 
     # ── 구글 드라이브 업로드 ──
     print(f"\n=== 구글 드라이브 업로드 → {folder_name} ===")
-    upload_targets = [summary_path, excel_path] + pdf_paths + yt_paths
-    if stock_path:
-        upload_targets.append(stock_path)
+    upload_targets = [summary_path, excel_path] + pdf_paths
 
     for path in upload_targets:
         upload_to_drive_via_gas(path, folder_name)
@@ -215,7 +226,6 @@ def main():
     save_processed_hashes(updated_hashes)
     print(f"\n처리된 PDF 해시 저장: 총 {len(updated_hashes)}건")
     print(f"\n✅ 파이프라인 완료: {now_kst.strftime('%Y-%m-%d %H:%M:%S')}")
-
 
 if __name__ == "__main__":
     main()
