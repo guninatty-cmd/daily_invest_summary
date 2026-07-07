@@ -117,6 +117,15 @@ def build_stock_dataframe(stock_prices: list[dict]) -> pd.DataFrame:
         columns=["티커", "날짜", "종가($)", "전일종가($)", "등락률(%)", "3%이상"]
     )
 
+def build_pdf_list_dataframe(pdf_paths: list[str]) -> pd.DataFrame:
+    """그날 수집된 PDF 파일 목록 (한눈에 보기용)"""
+    rows = [{"파일명": os.path.basename(p)} for p in pdf_paths]
+    if not rows:
+        return pd.DataFrame(columns=["연번", "파일명"])
+    df = pd.DataFrame(rows)
+    df.insert(0, "연번", range(1, len(df) + 1))
+    return df
+
 def write_ai_summary_text(filepath: str, df_news: pd.DataFrame, df_telegram: pd.DataFrame,
                            yt_transcripts: list[dict], stock_prices: list[dict]):
     with open(filepath, 'w', encoding='utf-8') as f:
@@ -209,6 +218,14 @@ def main():
         sheets_info += f" + 주가데이터({len(stock_prices)}종목)"
     print(f" 엑셀: {excel_path} | 시트: [{sheets_info}]")
 
+    # ── PDF 목록 엑셀 (있는 경우) ──
+    pdf_list_path = None
+    if pdf_paths:
+        pdf_list_df = build_pdf_list_dataframe(pdf_paths)
+        pdf_list_path = os.path.join(DOWNLOAD_DIR, f"{today_str}_PDF_목록.xlsx")
+        pdf_list_df.to_excel(pdf_list_path, index=False)
+        print(f" PDF 목록: {pdf_list_path} ({len(pdf_paths)}건)")
+
     # ── AI 요약용 텍스트 ──
     summary_path = os.path.join(DOWNLOAD_DIR, "00_AI_요약용_복붙텍스트.txt")
     write_ai_summary_text(summary_path, df_news, df_telegram, yt_transcripts, stock_prices)
@@ -216,7 +233,10 @@ def main():
 
     # ── 구글 드라이브 업로드 ──
     print(f"\n=== 구글 드라이브 업로드 → {folder_name} ===")
-    upload_targets = [summary_path, excel_path] + pdf_paths
+    upload_targets = [summary_path, excel_path]
+    if pdf_list_path:
+        upload_targets.append(pdf_list_path)
+    upload_targets += pdf_paths
 
     for path in upload_targets:
         upload_to_drive_via_gas(path, folder_name)
