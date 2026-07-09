@@ -8,6 +8,11 @@
 6) 모든 파일을 구글 드라이브 날짜 폴더에 업로드
 
 매일 KST 11:00 (UTC 02:00) GitHub Actions + cron-job.org 트리거
+
+[FIX 2026-07-09] PDF 해시는 "다운로드했다"가 아니라 "구글 드라이브 업로드까지
+성공했다"를 기준으로만 저장하도록 수정. 이전에는 업로드가 실패해도 해시가
+processed_pdf_hashes.txt 에 기록되어, 다음 실행에서 "크로스런 중복"으로 잘못
+건너뛰어지는 버그가 있었음 (업로드 실패 PDF가 영영 재시도되지 않음).
 """
 import os
 import re
@@ -45,10 +50,15 @@ def save_processed_hashes(hashes: set[str]):
     """처리된 PDF 해시 목록 저장 (GitHub Actions가 커밋)"""
     Path(PROCESSED_HASHES_FILE).write_text('\n'.join(sorted(hashes)), encoding='utf-8')
 
-def filter_new_pdfs(pdf_paths: list[str], known_hashes: set[str]) -> tuple[list[str], set[str]]:
-    """이미 처리된 PDF 제거. 반환: (새 파일 목록, 새 해시 set)"""
+def filter_new_pdfs(pdf_paths: list[str], known_hashes: set[str]) -> tuple[list[str], dict[str, str]]:
+    """이미 처리된 PDF 제거. 반환: (새 파일 목록, {파일경로: 해시})
+
+    [FIX] 예전에는 set[str]로 새 해시만 반환했는데, 그러면 업로드 결과와
+    파일 경로를 다시 매칭할 수 없었음. 이제 경로→해시 딕셔너리를 반환해서
+    "이 파일의 업로드가 성공했는지"와 "이 파일의 해시가 무엇인지"를 함께 추적한다.
+    """
     new_paths = []
-    new_hashes = set()
+    path_hashes: dict[str, str] = {}
     for path in pdf_paths:
         if not os.path.exists(path):
             continue
@@ -59,8 +69,8 @@ def filter_new_pdfs(pdf_paths: list[str], known_hashes: set[str]) -> tuple[list[
             os.remove(path)
         else:
             new_paths.append(path)
-            new_hashes.add(h)
-    return new_paths, new_hashes
+            path_hashes[path] = h
+    return new_paths, path_hashes
 
 # ──────────────────────────────────────────────
 # 데이터 병합 유틸
@@ -180,7 +190,7 @@ def main():
     known_hashes = load_processed_hashes()
     print(f" 기존 처리된 PDF 해시: {len(known_hashes)}건")
     df_telegram, pdf_paths_raw = asyncio.run(run_telegram_digest(download_dir=DOWNLOAD_DIR))
-    pdf_paths, new_hashes = filter_new_pdfs(pdf_paths_raw, known_hashes)
+    pdf_paths, pdf_path_hashes = filter_new_pdfs(pdf_paths_raw, known_hashes)
     print(f" ✔️ 메시지 {len(df_telegram)}건 / 새 PDF {len(pdf_paths)}건\n")
 
     # ── 3. 유튜브 URL 수집 ──
@@ -238,13 +248,28 @@ def main():
         upload_targets.append(pdf_list_path)
     upload_targets += pdf_paths
 
+    # [FIX] 업로드 성공 여부를 실제로 확인해서, 성공한 PDF의 해시만 모은다.
+    successfully_uploaded_pdf_hashes: set[str] = set()
+    failed_files = []
     for path in upload_targets:
-        upload_to_drive_via_gas(path, folder_name)
+        success = upload_to_drive_via_gas(path, folder_name)
+        if success:
+            if path in pdf_path_hashes:
+                successfully_uploaded_pdf_hashes.add(pdf_path_hashes[path])
+        else:
+            failed_files.append(path)
 
-    # ── PDF 해시 저장 (GitHub Actions가 커밋) ──
-    updated_hashes = known_hashes | new_hashes
+    if failed_files:
+        failed_pdf_count = sum(1 for p in failed_files if p in pdf_path_hashes)
+        print(f"\n⚠️ 업로드 실패 {len(failed_files)}건 (그중 PDF {failed_pdf_count}건)")
+        if failed_pdf_count:
+            print("   → 실패한 PDF는 해시를 기록하지 않으므로 다음 실행에서 자동 재시도됩니다.")
+
+    # ── PDF 해시 저장 (업로드까지 성공한 PDF만 기록, GitHub Actions가 커밋) ──
+    # [FIX] 예전: updated_hashes = known_hashes | new_hashes  (업로드 실패해도 무조건 저장)
+    updated_hashes = known_hashes | successfully_uploaded_pdf_hashes
     save_processed_hashes(updated_hashes)
-    print(f"\n처리된 PDF 해시 저장: 총 {len(updated_hashes)}건")
+    print(f"\n처리된 PDF 해시 저장: 총 {len(updated_hashes)}건 (이번 실행에서 업로드 성공한 PDF {len(successfully_uploaded_pdf_hashes)}건 추가)")
     print(f"\n✅ 파이프라인 완료: {now_kst.strftime('%Y-%m-%d %H:%M:%S')}")
 
 if __name__ == "__main__":
