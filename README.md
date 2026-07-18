@@ -11,7 +11,7 @@
 - telegram_digest.py  : 텔레그램 메시지/PDF 수집 (Telethon)
 - drive_upload.py     : 구글 드라이브 업로드 (기존 GAS 웹훅 재사용)
 - requirements.txt
-- .github/workflows/daily_invest_digest.yml : 매일 11:00 KST 실행 워크플로우
+- .github/workflows/daily_invest_digest.yml : 매일 07:00 KST 실행 워크플로우
 
 ## 기존 저장소(daily_invest_summary)에 적용하는 방법
 
