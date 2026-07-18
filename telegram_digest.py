@@ -21,11 +21,14 @@ KST = timezone(timedelta(hours=9))
 
 async def run_telegram_digest(download_dir: str = "downloads"):
     """
-    지난 24시간 동안의 텔레그램 대화 + PDF를 수집한다.
+    전날 19:00 ~ 당일 07:00(KST) 동안의 텔레그램 대화 + PDF를 수집한다.
     반환값: (messages_df, pdf_filepaths)
     """
-    now_utc = datetime.datetime.now(timezone.utc)
-    twenty_four_hours_ago = now_utc - datetime.timedelta(hours=24)
+    now_kst = datetime.datetime.now(KST)
+    window_end_kst = now_kst.replace(hour=7, minute=0, second=0, microsecond=0)
+    if now_kst < window_end_kst:
+        window_end_kst -= datetime.timedelta(days=1)
+    window_start_kst = window_end_kst - datetime.timedelta(hours=12)
 
     messages_data = []
     pdf_filepaths = []
