@@ -2,7 +2,7 @@ name: Daily Investment Digest
 
 on:
   schedule:
-    # UTC 02:00 = KST 11:00 (백업용 - cron-job.org가 주 트리거)
+    # UTC 22:00 = KST 07:00 (백업용 - cron-job.org가 주 트리거)
     - cron: '0 22 * * 0-4'
   workflow_dispatch:
     inputs:
