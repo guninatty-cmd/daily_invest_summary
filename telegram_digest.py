@@ -47,7 +47,7 @@ async def run_telegram_digest(download_dir: str = "downloads"):
             clean_chat_name = sanitize_filename(chat_name)
 
             async for message in client.iter_messages(dialog.id):
-                if message.date < twenty_four_hours_ago:
+                if message.date < window_start_kst:
                     break
 
                 msg_time_kst = message.date.astimezone(KST).strftime('%Y-%m-%d %H:%M:%S')
