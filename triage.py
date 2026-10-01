@@ -105,11 +105,28 @@ def filter_window(items: list[dict]) -> tuple[list[dict], int]:
     return kept, dropped
 
 
+def mark_link_keys(items: list[dict]) -> None:
+    """링크 중복 판단용 키(_lk)를 붙인다. 키움/하나/미래에셋 일부처럼 '여러 글이 같은 목록 링크'를 쓰는 경우
+    (같은 링크에 서로 다른 제목이 3건 이상)에는 링크가 글을 식별하지 못하므로 키를 비워 제목으로만 중복을 판단한다."""
+    titles_by_link: dict[str, set] = {}
+    for it in items:
+        nl = normalize_link(it.get("링크"))
+        if nl:
+            titles_by_link.setdefault(nl, set()).add(normalize_title(it.get("제목")))
+    for it in items:
+        nl = normalize_link(it.get("링크"))
+        it["_lk"] = "" if (nl and len(titles_by_link[nl]) >= 3) else nl
+
+
+def _lk(it: dict) -> str:
+    return it["_lk"] if "_lk" in it else normalize_link(it.get("링크"))
+
+
 def dedupe(items: list[dict]) -> list[dict]:
     """같은 실행 안에서 링크 또는 정규화 제목이 같으면 첫 항목만 유지 (네이버 지면/속보/타 사이트 중복 포함)."""
     seen_l, seen_t, kept = set(), set(), []
     for it in items:
-        nl, nt = normalize_link(it.get("링크")), normalize_title(it.get("제목"))
+        nl, nt = _lk(it), normalize_title(it.get("제목"))
         if (nl and nl in seen_l) or (nt and nt in seen_t):
             continue
         if nl:
@@ -132,8 +149,8 @@ class SeenState:
                 pass
 
     def is_seen(self, it: dict) -> bool:
-        nl, nt = normalize_link(it.get("링크")), normalize_title(it.get("제목"))
-        return (nl in self.data["links"]) or (nt in self.data["titles"])
+        nl, nt = _lk(it), normalize_title(it.get("제목"))
+        return bool(nl and nl in self.data["links"]) or bool(nt and nt in self.data["titles"])
 
     def filter_new(self, items: list[dict]) -> list[dict]:
         return [it for it in items if not self.is_seen(it)]
@@ -141,7 +158,7 @@ class SeenState:
     def add_and_save(self, items: list[dict]):
         today = datetime.now(KST).strftime("%Y-%m-%d")
         for it in items:
-            nl, nt = normalize_link(it.get("링크")), normalize_title(it.get("제목"))
+            nl, nt = _lk(it), normalize_title(it.get("제목"))
             if nl:
                 self.data["links"][nl] = today
             if nt:
