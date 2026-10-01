@@ -1,46 +1,46 @@
-name: Daily Investment Digest
+name: Daily Invest Digest (통합)
+
+# 하나의 잡이 전부 수행: 사이트 45곳 + 네이버 뉴스 + 유튜브 22채널 + 텔레그램(대화/PDF) + 주가
+#  -> 엑셀/후보목록 생성 -> 구글 드라이브 업로드.  노션 업로드는 없음.
+# 수집 구간: 어제 07:00 ~ 오늘 07:00 KST (common.py). 이미 성공한 날짜는 다시 실행해도 자동으로 건너뜀(FORCE_RUN=1 로 강제).
 
 on:
   schedule:
-    # UTC 10:10 = KST 19:10 (백업용 - cron-job.org가 주 트리거, SAVE PDF 다운로드(21~22시) 전 완료)
-    - cron: '10 10 * * 1-5'
+    # UTC 22:00 = KST 07:00.  월~금(UTC) 22:00 = KST 화~토 07:00
+    # (미국장은 월~금에 열려서 한국시간 화~토 아침에 결과가 나옴. 월~금 아침으로 바꾸려면 '0 22 * * 0-4')
+    - cron: '0 22 * * 1-5'
   workflow_dispatch:
     inputs:
-      triggered_by:
-        description: 'Trigger source (cron-job.org or manual)'
+      force_run:
+        description: '이미 성공한 날짜여도 다시 실행 (1 = 예)'
         required: false
-        default: 'manual'
+        default: '0'
+      window_end:
+        description: '과거 재수집용 구간 종료 시각 (예: 2026-10-02 07:00, 비우면 자동)'
+        required: false
+        default: ''
+
+concurrency:
+  group: invest-digest
+  cancel-in-progress: false
 
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
-      contents: write   # data/processed_pdf_hashes.txt 커밋용
+      contents: write   # state/ 및 processed_pdf_hashes.txt 커밋용
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - name: Cache pip packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
+          cache: 'pip'
 
       - name: Install dependencies
         run: pip install -r requirements.txt
-
-      - name: Install yt-dlp binary
-        run: |
-          sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
-          sudo chmod a+rx /usr/local/bin/yt-dlp
 
       - name: Run pipeline
         env:
@@ -49,13 +49,18 @@ jobs:
           TELEGRAM_SESSION_STRING: ${{ secrets.TELEGRAM_SESSION_STRING }}
           GAS_WEBHOOK_URL: ${{ secrets.GAS_WEBHOOK_URL }}
           GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
-          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+          FORCE_RUN: ${{ github.event.inputs.force_run }}
+          WINDOW_END: ${{ github.event.inputs.window_end }}
+          # 자막 추출은 클라우드 IP가 차단되는 경우가 많아 기본 꺼짐. PC에서 `python main.py --youtube-only` 로 처리.
+          ACTIONS_TRANSCRIPTS: '0'
         run: python main.py
 
-      - name: Commit updated PDF hashes
+      - name: Commit state (이미 처리한 항목/PDF 기록)
+        if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add processed_pdf_hashes.txt
-          git diff --cached --quiet || git commit -m "chore: update processed PDF hashes [skip ci]"
-          git push
+          git add state/ processed_pdf_hashes.txt
+          git diff --cached --quiet || git commit -m "chore: update state [skip ci]"
+          git pull --rebase -q || true
+          git push || true
