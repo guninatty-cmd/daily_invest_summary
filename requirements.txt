@@ -1,9 +1,10 @@
-selenium>=4.21.0
+requests
 beautifulsoup4
+selenium>=4.21.0
+python-dateutil
 pandas
 openpyxl
-requests
+pypdf
 telethon
-feedparser
-yt-dlp
 yfinance
+yt-dlp
