@@ -1,276 +1,323 @@
 """
-통합 투자 데이터 자동화 파이프라인 v2
-1) 네이버 뉴스(6대 경제지 당일 지면기사 + 글로벌경제 속보 전날치) 수집
-2) 텔레그램 대화(전날 24시간) + PDF(전날 하루치) 수집 — 크로스런 중복 방지
-3) 유튜브 채널 전날 영상 URL 수집 (Shorts 제외, 실제 스크립트는 Cowork NotebookLM이 추출)
-4) 관심 종목 전일 등락폭 수집
-5) 뉴스+텔레그램을 엑셀로 병합 (유튜브링크·주가데이터는 별도 시트로 추가)
-6) 모든 파일을 구글 드라이브 날짜 폴더에 업로드
+통합 투자 데이터 수집 파이프라인 (daily_invest_summary + invest-today-digest 통합본)
 
-매일 KST 07:00 (UTC 22:00) GitHub Actions + cron-job.org 트리거
+실행:  python main.py                  # 전체 수집 -> 엑셀/후보목록 생성 -> 구글 드라이브 업로드
+       python main.py --youtube-only   # (PC용) 유튜브 전날 영상 목록 + 자막 추출만 -> '{날짜}_유튜브_자막.xlsx'
+       python main.py --no-upload      # 로컬 테스트: 업로드/상태저장 없이 파일만 생성
 
-[FIX 2026-07-09] PDF 해시는 "다운로드했다"가 아니라 "구글 드라이브 업로드까지
-성공했다"를 기준으로만 저장하도록 수정. 이전에는 업로드가 실패해도 해시가
-processed_pdf_hashes.txt 에 기록되어, 다음 실행에서 "크로스런 중복"으로 잘못
-건너뛰어지는 버그가 있었음 (업로드 실패 PDF가 영영 재시도되지 않음).
+수집 구간(전 수집기 공통): 어제 07:00 ~ 오늘 07:00 KST  (common.get_window 참고)
+노션 업로드는 제거되었다. 결과물은 엑셀 + 후보목록(txt) 이고, Claude가 이 파일을 읽어 리포트를 만든다.
+
+출력 파일 (downloads/ -> 드라이브 '{오늘}_주식리포트_모음' 폴더)
+  {오늘}_투자데이터_통합.xlsx   시트: 00_안내 / 기사_리서치 / 텔레그램 / 유튜브 / PDF목록 / PDF정독본 / 주가
+  00_후보목록.txt               미국주식 관련 '후보'만 한 줄씩 압축한 목록 (Claude가 가장 먼저 읽는 파일)
+  {오늘}_유튜브_자막.xlsx       (자막이 추출된 경우) 영상별 자막 전문 - 제목으로 고른 영상만 읽는다
+  [채널] 파일명.pdf             텔레그램에서 받은 증권사 PDF 원본
 """
 import os
 import re
-import json
+import sys
 import asyncio
-import datetime
 import hashlib
-from datetime import timezone, timedelta
+import datetime
+import traceback
 from pathlib import Path
 
 import pandas as pd
 
-from naver_news import scrape_naver_news
-from telegram_digest import run_telegram_digest
-from drive_upload import upload_to_drive_via_gas
-from youtube_transcript import collect_youtube_transcripts
-from stock_prices import collect_stock_prices
+from common import KST, get_window, parse_dt, has_time_part
+from triage import (SeenState, annotate, dedupe, filter_window, load_watch_tickers, mark_link_keys, score_text)
 
-KST = timezone(timedelta(hours=9))
 DOWNLOAD_DIR = "downloads"
 PROCESSED_HASHES_FILE = "processed_pdf_hashes.txt"
+MAX_TXT_LINES = int(os.environ.get("MAX_CANDIDATE_LINES", "400"))
+TRANSCRIPTS_ON_ACTIONS = os.environ.get("ACTIONS_TRANSCRIPTS", "0") == "1"
 
-# ──────────────────────────────────────────────
-# PDF 크로스런 중복 방지
-# ──────────────────────────────────────────────
 
-def load_processed_hashes() -> set[str]:
-    """이전 실행에서 처리된 PDF 해시 목록 로드"""
+# ───────────── 유틸 ─────────────
+def fmt_date(raw) -> str:
+    dt = parse_dt(raw)
+    if dt is None:
+        return ""
+    return dt.strftime("%Y-%m-%d %H:%M") if has_time_part(raw) else dt.strftime("%Y-%m-%d")
+
+
+def kind_of(source: str) -> str:
+    s = source or ""
+    if s.startswith("유튜브"):
+        return "유튜브"
+    if any(k in s for k in ("증권", "컨센서스", "KB금융 리서치", "리서치")):
+        return "증권사·리서치"
+    if any(k in s for k in ("ETF", "KODEX", "TIGER", "TIME", "RISE", "KoAct", "KB자산운용", "KB Think")):
+        return "ETF·운용사"
+    return "뉴스·미디어"
+
+
+def load_hashes() -> set[str]:
     p = Path(PROCESSED_HASHES_FILE)
-    if not p.exists():
-        return set()
-    return set(line.strip() for line in p.read_text(encoding='utf-8').splitlines() if line.strip())
+    return set(l.strip() for l in p.read_text(encoding="utf-8").splitlines() if l.strip()) if p.exists() else set()
 
-def save_processed_hashes(hashes: set[str]):
-    """처리된 PDF 해시 목록 저장 (GitHub Actions가 커밋)"""
-    Path(PROCESSED_HASHES_FILE).write_text('\n'.join(sorted(hashes)), encoding='utf-8')
 
-def filter_new_pdfs(pdf_paths: list[str], known_hashes: set[str]) -> tuple[list[str], dict[str, str]]:
-    """이미 처리된 PDF 제거. 반환: (새 파일 목록, {파일경로: 해시})
-
-    [FIX] 예전에는 set[str]로 새 해시만 반환했는데, 그러면 업로드 결과와
-    파일 경로를 다시 매칭할 수 없었음. 이제 경로→해시 딕셔너리를 반환해서
-    "이 파일의 업로드가 성공했는지"와 "이 파일의 해시가 무엇인지"를 함께 추적한다.
-    """
-    new_paths = []
-    path_hashes: dict[str, str] = {}
-    for path in pdf_paths:
-        if not os.path.exists(path):
+def filter_new_pdfs(paths: list[str], known: set[str]):
+    new_paths, path_hash = [], {}
+    for p in paths:
+        if not os.path.exists(p):
             continue
-        with open(path, 'rb') as f:
-            h = hashlib.sha256(f.read()).hexdigest()
-        if h in known_hashes:
-            print(f" ⏭️ 크로스런 중복 PDF 건너뜀: {os.path.basename(path)}")
-            os.remove(path)
+        h = hashlib.sha256(open(p, "rb").read()).hexdigest()
+        if h in known:
+            os.remove(p)
         else:
-            new_paths.append(path)
-            path_hashes[path] = h
-    return new_paths, path_hashes
+            new_paths.append(p)
+            path_hash[p] = h
+    return new_paths, path_hash
 
-# ──────────────────────────────────────────────
-# 데이터 병합 유틸
-# ──────────────────────────────────────────────
 
-def build_unified_dataframe(df_news: pd.DataFrame, df_telegram: pd.DataFrame) -> pd.DataFrame:
-    rows = []
-    for _, r in df_news.iterrows():
-        rows.append({
-            "구분": "뉴스",
-            "날짜": r.get("기사 등록일", ""),
-            "시간": "",
-            "출처/채널": r.get("출처", ""),
-            "제목/내용": r.get("기사 제목", ""),
-            "원문 링크": r.get("원문 링크", ""),
-        })
-    for _, r in df_telegram.iterrows():
-        sent_at = str(r.get("발송 시간", ""))
-        date_part, _, time_part = sent_at.partition(" ")
-        rows.append({
-            "구분": "텔레그램",
-            "날짜": date_part,
-            "시간": time_part,
-            "출처/채널": r.get("채널명", ""),
-            "제목/내용": r.get("내용", ""),
-            "원문 링크": "",
-        })
-    if not rows:
-        return pd.DataFrame(columns=["연번", "구분", "날짜", "시간", "출처/채널", "제목/내용", "원문 링크"])
-    df = pd.DataFrame(rows)
-    df = df.sort_values(by=["날짜", "시간"], kind="stable").reset_index(drop=True)
-    df.insert(0, "연번", range(1, len(df) + 1))
-    return df
+def collect_sources() -> tuple[list[dict], dict]:
+    """기사/리서치 계열 수집기를 모두 실행. 실패해도 나머지는 계속. 반환: (items, 수집기별 상태)"""
+    from scrapers.hankyung_consensus import scrape_hankyung_consensus
+    from scrapers.generic_link_sites import scrape_generic_sites
+    from scrapers.sol_etf import scrape_sol_etf
+    from scrapers.kiwoom import scrape_kiwoom
+    from scrapers.kodex_time_tiger import scrape_kodex, scrape_time_etf, scrape_tiger_etf
+    from scrapers.ace_etf import scrape_ace_etf
+    from scrapers.myasset import scrape_myasset
+    from scrapers.hanaw import scrape_hanaw
+    from scrapers.miraeasset import scrape_miraeasset
+    from scrapers.naver_news import scrape_naver_news
 
-def build_youtube_dataframe(yt_transcripts: list[dict]) -> pd.DataFrame:
-    """유튜브 영상 URL 목록 시트용 DataFrame"""
-    rows = [
-        {"제목": v.get("title", ""), "URL": v.get("url", "")}
-        for v in yt_transcripts
+    scrapers = [
+        ("한경 컨센서스", scrape_hankyung_consensus), ("직링크 11개 사이트", scrape_generic_sites),
+        ("SOL ETF", scrape_sol_etf), ("키움증권", scrape_kiwoom), ("KODEX", scrape_kodex),
+        ("TIME ETF", scrape_time_etf), ("TIGER ETF", scrape_tiger_etf), ("ACE ETF", scrape_ace_etf),
+        ("유안타증권", scrape_myasset), ("하나증권", scrape_hanaw), ("미래에셋증권", scrape_miraeasset),
+        ("네이버 뉴스(6개 언론사+속보)", scrape_naver_news),
     ]
-    return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["제목", "URL"])
+    items, status = [], {}
+    for label, fn in scrapers:
+        try:
+            got = fn()
+            for it in got:
+                it.setdefault("게시일", it.get("작성일"))
+            items.extend(got)
+            status[label] = f"OK {len(got)}건"
+            print(f"✅ {label}: {len(got)}건")
+        except Exception as e:
+            status[label] = f"실패: {type(e).__name__}: {str(e)[:80]}"
+            print(f"❌ {label} 실패:")
+            traceback.print_exc()
+    return items, status
 
-def build_stock_dataframe(stock_prices: list[dict]) -> pd.DataFrame:
-    """관심 종목 등락폭 시트용 DataFrame"""
-    rows = [{
-        "티커": s.get("ticker", ""),
-        "날짜": s.get("date", ""),
-        "종가($)": s.get("close", ""),
-        "전일종가($)": s.get("prev_close", ""),
-        "등락률(%)": s.get("change_pct", ""),
-        "3%이상": "⚠️" if s.get("alert") else "",
-    } for s in stock_prices]
-    return pd.DataFrame(rows) if rows else pd.DataFrame(
-        columns=["티커", "날짜", "종가($)", "전일종가($)", "등락률(%)", "3%이상"]
-    )
 
-def build_pdf_list_dataframe(pdf_paths: list[str]) -> pd.DataFrame:
-    """그날 수집된 PDF 파일 목록 (한눈에 보기용)"""
-    rows = [{"파일명": os.path.basename(p)} for p in pdf_paths]
-    if not rows:
-        return pd.DataFrame(columns=["연번", "파일명"])
-    df = pd.DataFrame(rows)
-    df.insert(0, "연번", range(1, len(df) + 1))
-    return df
+# ───────────── 엑셀/후보목록 ─────────────
+def one_line(text: str, n: int) -> str:
+    t = re.sub(r"\s+", " ", text or "").strip()
+    return t[:n] + ("…" if len(t) > n else "")
 
-def write_ai_summary_text(filepath: str, df_news: pd.DataFrame, df_telegram: pd.DataFrame,
-                           yt_transcripts: list[dict], stock_prices: list[dict]):
-    with open(filepath, 'w', encoding='utf-8') as f:
-        f.write("너는 주식 투자 전문 애널리스트야. 아래 제공되는 텍스트는 지난 24시간 동안 수집된 "
-                "경제 뉴스, 투자 채널 대화 내역, 유튜브 채널 자막, 관심 종목 등락폭 데이터야.\n")
-        f.write("국내 주식, 국내 매크로, 원자재 선물 관련 내용은 제외하고, "
-                "'미국 주식 투자에 직접 관련된 핵심 정보'만 요약해줘.\n\n")
 
-        f.write("--- [네이버 뉴스] ---\n\n")
-        for _, row in df_news.iterrows():
-            f.write(f"[{row['출처']} | {row['기사 등록일']}] {row['기사 제목']}\n{row['원문 링크']}\n\n")
+def write_candidate_txt(path, window, arts, tgs, yts, pdf_rows, stocks):
+    start, end = window
+    L = [f"# 후보목록 | 수집구간 {start:%m/%d %H:%M} ~ {end:%m/%d %H:%M} KST",
+         "# 형식: ID|분류힌트|출처|제목  (전체 원문/링크는 엑셀의 같은 ID 행). 후보=Y 만 수록, 점수 높은 순.",
+         "# 읽기 원칙: 이 파일만 먼저 읽고, 본문이 꼭 필요한 항목만 ID로 엑셀에서 추가 조회할 것.", ""]
+    used = 0
 
-        f.write("\n--- [텔레그램 대화] ---\n\n")
-        for _, row in df_telegram.iterrows():
-            f.write(f"[{row['채널명']} | {row['발송 시간']}]\n{row['내용']}\n")
-            f.write("-" * 40 + "\n\n")
+    def section(title, lines):
+        nonlocal used
+        L.append(f"## {title} ({len(lines)}건)")
+        room = max(MAX_TXT_LINES - used, 0)
+        L.extend(lines[:room])
+        if len(lines) > room:
+            L.append(f"(… {len(lines) - room}건은 엑셀 참조)")
+        used += min(len(lines), room)
+        L.append("")
 
-        if yt_transcripts:
-            f.write("\n--- [유튜브 채널 URL 목록 (스크립트는 Cowork이 별도 추출)] ---\n\n")
-            for yt in yt_transcripts:
-                f.write(f"[제목] {yt['title']}\n[URL] {yt['url']}\n\n")
+    section("기사·리서치", [f"{a['ID']}|{a['분류힌트']}|{a['출처']}|{one_line(a['제목'], 90)}" for a in arts if a["후보"] == "Y"])
+    section("텔레그램", [f"{t['ID']}|{t['분류힌트']}|{t['채널']}|{t['시각'][5:]}|{one_line(t['내용'], 260)}" for t in tgs if t["후보"] == "Y"])
+    section("유튜브(제목으로 고른 뒤 자막 파일에서 해당 영상만 읽을 것)", [f"{y['ID']}|{y['분류힌트']}|{y['채널']}|{one_line(y['제목'], 90)}|자막:{y.get('자막상태', '자막대기')}" for y in yts if y["후보"] == "Y"])
+    section("PDF (정독대상=Y 만 'PDF정독본' 시트에 본문 있음)", [f"{p['ID']}|{p['유형']}|{p['채널']}|{p['파일명']}|{p['쪽수']}쪽|정독:{p['정독대상']}" for p in pdf_rows])
+    if stocks:
+        L.append("## 관심종목 전일 등락")
+        L.append(", ".join(f"{s['ticker']} {s['change_pct']:+.1f}%{'⚠' if s.get('alert') else ''}" for s in stocks if s.get("change_pct") is not None))
+    Path(path).write_text("\n".join(L), encoding="utf-8")
 
-        if stock_prices:
-            f.write("\n--- [관심 종목 전일 등락폭] ---\n\n")
-            for s in stock_prices:
-                alert = " ⚠️ 3%이상 등락" if s.get('alert') else ""
-                f.write(f"{s['ticker']}: ${s['close']} ({s['change_pct']:+.1f}%){alert}\n")
 
-# ──────────────────────────────────────────────
-# 메인
-# ──────────────────────────────────────────────
+def write_workbook(path, window, log_lines, arts, tgs, yts, pdf_rows, pdf_body, stocks):
+    with pd.ExcelWriter(path, engine="openpyxl") as w:
+        info = [["수집 구간(KST)", f"{window[0]:%Y-%m-%d %H:%M} ~ {window[1]:%Y-%m-%d %H:%M}"],
+                ["읽는 법", "후보=Y 이고 점수 높은 행만 읽는다. 후보=N 은 제외사유 확인용(읽지 않는다)."],
+                ["분류힌트", "규칙 기반 힌트일 뿐이며 최종 분류는 리포트 작성 시 확정"], ["", ""]] + [[k, v] for k, v in log_lines]
+        pd.DataFrame(info, columns=["항목", "내용"]).to_excel(w, sheet_name="00_안내", index=False)
+        a_cols = ["ID", "후보", "점수", "분류힌트", "구분", "출처", "제목", "게시일", "링크", "제외사유"]
+        pd.DataFrame(arts, columns=a_cols).to_excel(w, sheet_name="기사_리서치", index=False)
+        t_cols = ["ID", "후보", "점수", "분류힌트", "시각", "채널", "내용", "제외사유"]
+        pd.DataFrame(tgs, columns=t_cols).to_excel(w, sheet_name="텔레그램", index=False)
+        y_cols = ["ID", "후보", "점수", "분류힌트", "채널", "제목", "게시일", "링크", "자막상태", "제외사유"]
+        pd.DataFrame(yts, columns=y_cols).to_excel(w, sheet_name="유튜브", index=False)
+        p_cols = ["ID", "정독대상", "유형", "채널", "파일명", "쪽수", "점수", "분류힌트", "첫쪽미리보기", "제외사유"]
+        pd.DataFrame(pdf_rows, columns=p_cols).to_excel(w, sheet_name="PDF목록", index=False)
+        pd.DataFrame(pdf_body, columns=["파일명", "유형", "분할", "본문"]).to_excel(w, sheet_name="PDF정독본", index=False)
+        if stocks:
+            pd.DataFrame([{"티커": s["ticker"], "날짜": s["date"], "종가($)": s["close"], "전일종가($)": s["prev_close"],
+                           "등락률(%)": s["change_pct"], "±3%이상": "⚠" if s["alert"] else ""} for s in stocks]
+                         ).to_excel(w, sheet_name="주가", index=False)
 
-def main():
-    now_kst = datetime.datetime.now(KST)
-    today_str = now_kst.strftime("%Y-%m-%d")
-    yesterday_str = (now_kst - timedelta(days=1)).strftime("%Y-%m-%d")
-    yesterday_param = (now_kst - timedelta(days=1)).strftime("%Y%m%d")
-    folder_name = f"{today_str}_주식리포트_모음"
 
+# ───────────── 유튜브 전용 모드 (PC) ─────────────
+def run_youtube_only(upload: bool):
+    from scrapers.youtube import scrape_youtube
+    from youtube_transcripts import extract_transcripts, write_transcript_excel
+    window = get_window()
+    date_label = f"{window[1]:%Y-%m-%d}"
+    print(f"📺 유튜브 전용 모드 | 구간 {window[0]:%m/%d %H:%M} ~ {window[1]:%m/%d %H:%M} KST")
+    videos = extract_transcripts(scrape_youtube())
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    out = os.path.join(DOWNLOAD_DIR, f"{date_label}_유튜브_자막.xlsx")
+    write_transcript_excel(videos, out)
+    done = sum(v.get("자막상태") == "완료" for v in videos)
+    print(f"✅ {out} | 영상 {len(videos)}건 중 자막 완료 {done}건")
+    if upload and os.environ.get("GAS_WEBHOOK_URL"):
+        from drive_upload import upload_to_drive_via_gas
+        if not upload_to_drive_via_gas(out, f"{date_label}_주식리포트_모음"):
+            sys.exit(1)
 
-    print(f"📅 실행 기준 시각(KST): {now_kst.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f" - 대상 날짜: {yesterday_str} | 업로드 폴더: {folder_name}\n")
 
-    # ── 1. 네이버 뉴스 ──
-    print("=== [1/4] 네이버 뉴스 수집 ===")
-    df_news = scrape_naver_news(today_str=today_str, yesterday_str=yesterday_str, yesterday_param=yesterday_param)
-    print(f" ✔️ 뉴스 {len(df_news)}건\n")
+# ───────────── 메인 ─────────────
+def main():
+    args = set(sys.argv[1:])
+    upload = "--no-upload" not in args
+    if "--youtube-only" in args:
+        return run_youtube_only(upload)
 
-    # ── 2. 텔레그램 (크로스런 중복 방지 포함) ──
-    print("=== [2/4] 텔레그램 수집 ===")
-    known_hashes = load_processed_hashes()
-    print(f" 기존 처리된 PDF 해시: {len(known_hashes)}건")
-    df_telegram, pdf_paths_raw = asyncio.run(run_telegram_digest(download_dir=DOWNLOAD_DIR))
-    pdf_paths, pdf_path_hashes = filter_new_pdfs(pdf_paths_raw, known_hashes)
-    print(f" ✔️ 메시지 {len(df_telegram)}건 / 새 PDF {len(pdf_paths)}건\n")
+    from scrapers.youtube import scrape_youtube
+    from stock_prices import collect_stock_prices
+    from telegram_digest import run_telegram_digest
+    from pdf_triage import triage_pdfs
 
-    # ── 3. 유튜브 URL 수집 ──
-    print("=== [3/4] 유튜브 영상 URL 수집 (Shorts 제외) ===")
-    yt_transcripts = collect_youtube_transcripts(download_dir=DOWNLOAD_DIR)
-    print(f" ✔️ 영상 URL {len(yt_transcripts)}건\n")
+    window = get_window()
+    start, end = window
+    date_label = f"{end:%Y-%m-%d}"
+    folder_name = f"{date_label}_주식리포트_모음"
+    last_run = Path("state/last_run.txt")
+    if upload and os.environ.get("FORCE_RUN") != "1" and last_run.exists() and last_run.read_text().strip() == date_label:
+        print(f"⏭️ {date_label} 구간은 이미 성공적으로 실행됨 - 중복 실행(지연된 스케줄 등) 건너뜀. 다시 하려면 FORCE_RUN=1")
+        return
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    print(f"📅 수집 구간(KST): {start:%Y-%m-%d %H:%M} ~ {end:%Y-%m-%d %H:%M} | 업로드 폴더: {folder_name}\n")
+    tickers = load_watch_tickers()
+    log = [("실행 시각(KST)", f"{datetime.datetime.now(KST):%Y-%m-%d %H:%M:%S}")]
 
-    # ── 4. 관심 종목 등락폭 ──
-    print("=== [4/4] 관심 종목 등락폭 수집 ===")
-    stock_prices = collect_stock_prices()
+    # 1) 기사·리서치 (네이버 포함, 단일 수집기)
+    items, status = collect_sources()
+    log += [(f"수집기: {k}", v) for k, v in status.items()]
+    for it in items:
+        it["게시일"] = it.get("게시일") or it.get("작성일")
+    mark_link_keys(items)
+    n0 = len(items)
+    items, dropped_old = filter_window(items)
+    items = dedupe(items)
+    seen = SeenState()
+    items = seen.filter_new(items)
+    log.append(("기사·리서치 정리", f"수집 {n0} → 구간밖 {dropped_old}건 제거 → 중복/이전 실행분 제거 후 {len(items)}건"))
+    annotate(items, ("제목",), tickers)
+    items.sort(key=lambda i: (i["후보"] != "Y", -i["점수"]))
+    arts = []
+    for n, it in enumerate(items, 1):
+        arts.append({"ID": f"A{n}", **{k: it.get(k, "") for k in ("후보", "점수", "분류힌트", "출처", "제목", "링크", "제외사유")},
+                     "구분": kind_of(it.get("출처", "")), "게시일": fmt_date(it.get("게시일")), "_lk": it.get("_lk", "")})
 
-    # ── 엑셀 병합 (다중 시트) ──
-    print("=== 파일 생성 ===")
-    unified_df = build_unified_dataframe(df_news, df_telegram)
-    excel_path = os.path.join(DOWNLOAD_DIR, f"{today_str}_투자데이터_통합.xlsx")
+    # 2) 유튜브 (제목/링크 + 선택적 자막)
+    try:
+        videos = scrape_youtube()
+        log.append(("유튜브 목록", f"OK {len(videos)}건"))
+    except Exception as e:
+        videos = []
+        log.append(("유튜브 목록", f"실패: {e}"))
+        traceback.print_exc()
+    yt_new = [v for v in videos if not seen.is_seen(v)]
+    transcript_path = None
+    if TRANSCRIPTS_ON_ACTIONS and yt_new:
+        from youtube_transcripts import extract_transcripts, write_transcript_excel
+        yt_new = extract_transcripts(yt_new)
+        transcript_path = os.path.join(DOWNLOAD_DIR, f"{date_label}_유튜브_자막.xlsx")
+        write_transcript_excel(yt_new, transcript_path)
+    annotate(yt_new, ("제목",), tickers)
+    yts = []
+    for n, v in enumerate(sorted(yt_new, key=lambda i: -i["점수"]), 1):
+        yts.append({"ID": f"Y{n}", **{k: v.get(k, "") for k in ("후보", "점수", "분류힌트", "채널", "제목", "링크", "제외사유")},
+                    "게시일": fmt_date(v.get("게시일")), "자막상태": v.get("자막상태", "자막대기")})
 
-    with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
-        # 시트 1: 뉴스 + 텔레그램 (기존 데이터)
-        unified_df.to_excel(writer, sheet_name='뉴스_텔레그램', index=False)
-
-        # 시트 2: 유튜브 링크 (있는 경우)
-        if yt_transcripts:
-            yt_df = build_youtube_dataframe(yt_transcripts)
-            yt_df.to_excel(writer, sheet_name='유튜브링크', index=False)
-
-        # 시트 3: 관심 종목 주가 (있는 경우)
-        if stock_prices:
-            stock_df = build_stock_dataframe(stock_prices)
-            stock_df.to_excel(writer, sheet_name='주가데이터', index=False)
-
-    sheets_info = "뉴스_텔레그램"
-    if yt_transcripts:
-        sheets_info += f" + 유튜브링크({len(yt_transcripts)}건)"
-    if stock_prices:
-        sheets_info += f" + 주가데이터({len(stock_prices)}종목)"
-    print(f" 엑셀: {excel_path} | 시트: [{sheets_info}]")
-
-    # ── PDF 목록 엑셀 (있는 경우) ──
-    pdf_list_path = None
+    # 3) 텔레그램 + PDF
+    tgs, pdf_rows, pdf_body, pdf_paths, pdf_hash = [], [], [], [], {}
+    known = load_hashes()
+    try:
+        msgs, pdf_raw = asyncio.run(run_telegram_digest(DOWNLOAD_DIR))
+        pdf_paths, pdf_hash = filter_new_pdfs(pdf_raw, known)
+        log.append(("텔레그램", f"OK 메시지 {len(msgs)}건 / 새 PDF {len(pdf_paths)}건 (이미 처리한 PDF {len(pdf_raw) - len(pdf_paths)}건 제외)"))
+    except Exception as e:
+        msgs = []
+        log.append(("텔레그램", f"실패: {type(e).__name__}: {str(e)[:80]}"))
+        traceback.print_exc()
+    for m in msgs:
+        score, reason, hint = score_text(m["내용"], tickers)
+        if reason is None and len(m["내용"].strip()) < 30:
+            reason = "너무 짧은 메시지"
+        m.update({"점수": score, "분류힌트": hint, "후보": "N" if reason else "Y", "제외사유": reason or ""})
+    msgs.sort(key=lambda m: (m["후보"] != "Y", -m["점수"]))
+    for n, m in enumerate(msgs, 1):
+        tgs.append({"ID": f"T{n}", **m})
     if pdf_paths:
-        pdf_list_df = build_pdf_list_dataframe(pdf_paths)
-        pdf_list_path = os.path.join(DOWNLOAD_DIR, f"{today_str}_PDF_목록.xlsx")
-        pdf_list_df.to_excel(pdf_list_path, index=False)
-        print(f" PDF 목록: {pdf_list_path} ({len(pdf_paths)}건)")
+        pdf_rows, pdf_body = triage_pdfs(pdf_paths)
+        for n, r in enumerate(pdf_rows, 1):
+            r["ID"] = f"P{n}"
+        log.append(("PDF 선별", f"전체 {len(pdf_rows)}건 중 정독대상 {sum(r['정독대상'] == 'Y' for r in pdf_rows)}건 (본문 추출)"))
 
-    # ── AI 요약용 텍스트 ──
-    summary_path = os.path.join(DOWNLOAD_DIR, "00_AI_요약용_복붙텍스트.txt")
-    write_ai_summary_text(summary_path, df_news, df_telegram, yt_transcripts, stock_prices)
-    print(f" 요약 텍스트: {summary_path}")
+    # 4) 주가
+    try:
+        stocks = collect_stock_prices()
+        log.append(("주가", f"OK {len(stocks)}종목"))
+    except Exception as e:
+        stocks = []
+        log.append(("주가", f"실패: {e}"))
 
-    # ── 구글 드라이브 업로드 ──
-    print(f"\n=== 구글 드라이브 업로드 → {folder_name} ===")
-    upload_targets = [summary_path, excel_path]
-    if pdf_list_path:
-        upload_targets.append(pdf_list_path)
-    upload_targets += pdf_paths
+    # 5) 파일 생성
+    excel_path = os.path.join(DOWNLOAD_DIR, f"{date_label}_투자데이터_통합.xlsx")
+    txt_path = os.path.join(DOWNLOAD_DIR, "00_후보목록.txt")
+    write_workbook(excel_path, window, log, arts, tgs, yts, pdf_rows, pdf_body, stocks)
+    write_candidate_txt(txt_path, window, arts, tgs, yts, pdf_rows, stocks)
+    cand = lambda rows: sum(r.get("후보") == "Y" for r in rows)
+    print(f"\n📊 기사 {len(arts)}(후보 {cand(arts)}) | 텔레그램 {len(tgs)}(후보 {cand(tgs)}) | "
+          f"유튜브 {len(yts)} | PDF {len(pdf_rows)}")
 
-    # [FIX] 업로드 성공 여부를 실제로 확인해서, 성공한 PDF의 해시만 모은다.
-    successfully_uploaded_pdf_hashes: set[str] = set()
-    failed_files = []
-    for path in upload_targets:
-        success = upload_to_drive_via_gas(path, folder_name)
-        if success:
-            if path in pdf_path_hashes:
-                successfully_uploaded_pdf_hashes.add(pdf_path_hashes[path])
+    if not (arts or tgs or yts or pdf_rows):
+        print("❌ 수집된 데이터가 전혀 없습니다 (모든 수집기 실패 가능).")
+        sys.exit(1)
+    if not upload:
+        return
+
+    # 6) 드라이브 업로드 - 하나라도 실패하면 실행 자체를 '실패'로 표시한다 (조용한 성공 방지)
+    from drive_upload import upload_to_drive_via_gas
+    targets = [txt_path, excel_path] + ([transcript_path] if transcript_path else []) + pdf_paths
+    failed, ok_pdf_hashes = [], set()
+    for p in targets:
+        if upload_to_drive_via_gas(p, folder_name):
+            if p in pdf_hash:
+                ok_pdf_hashes.add(pdf_hash[p])
         else:
-            failed_files.append(path)
+            failed.append(os.path.basename(p))
 
-    if failed_files:
-        failed_pdf_count = sum(1 for p in failed_files if p in pdf_path_hashes)
-        print(f"\n⚠️ 업로드 실패 {len(failed_files)}건 (그중 PDF {failed_pdf_count}건)")
-        if failed_pdf_count:
-            print("   → 실패한 PDF는 해시를 기록하지 않으므로 다음 실행에서 자동 재시도됩니다.")
+    core_ok = not any(n in failed for n in (os.path.basename(txt_path), os.path.basename(excel_path)))
+    if core_ok:   # 핵심 파일이 올라간 경우에만 '이미 수집함' 상태를 저장 (실패 시 다음 실행이 재시도)
+        seen.add_and_save([{"링크": a["링크"], "제목": a["제목"], "_lk": a["_lk"]} for a in arts] +
+                          [{"링크": y["링크"], "제목": y["제목"]} for y in yts])
+    Path(PROCESSED_HASHES_FILE).write_text("\n".join(sorted(known | ok_pdf_hashes)), encoding="utf-8")
+    if core_ok:
+        last_run.parent.mkdir(parents=True, exist_ok=True)
+        last_run.write_text(date_label)
+    if failed:
+        print(f"\n❌ 업로드 실패 {len(failed)}건: {failed}")
+        sys.exit(1)
+    print(f"\n✅ 완료: {folder_name}")
 
-    # ── PDF 해시 저장 (업로드까지 성공한 PDF만 기록, GitHub Actions가 커밋) ──
-    # [FIX] 예전: updated_hashes = known_hashes | new_hashes  (업로드 실패해도 무조건 저장)
-    updated_hashes = known_hashes | successfully_uploaded_pdf_hashes
-    save_processed_hashes(updated_hashes)
-    print(f"\n처리된 PDF 해시 저장: 총 {len(updated_hashes)}건 (이번 실행에서 업로드 성공한 PDF {len(successfully_uploaded_pdf_hashes)}건 추가)")
-    print(f"\n✅ 파이프라인 완료: {now_kst.strftime('%Y-%m-%d %H:%M:%S')}")
 
 if __name__ == "__main__":
     main()
