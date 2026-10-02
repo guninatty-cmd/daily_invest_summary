@@ -5,13 +5,14 @@
 - 무료 한도(하루 유튜브 영상 8시간) 보호: 하루 총 재생시간 상한(MAX_TOTAL_SEC)·건수 상한(MAX_VIDEOS).
 - GEMINI_API_KEY 가 없으면 조용히 건너뛴다. 모델은 GEMINI_MODEL(쉼표 구분 목록 가능) 우선, 실패 시 다음 모델.
 """
+import re
 import os
 import time
 
 MAX_SEC = 3600            # 영상 1개 상한 (1시간)
 MAX_TOTAL_SEC = 7 * 3600  # 하루 합계 상한 (무료 한도 8시간 안쪽)
 MAX_VIDEOS = 12
-TOKENS_PER_SEC = 290      # 유튜브 영상 토큰 환산(프레임 258 + 음성 32 /초). 길이 추정용
+TOKENS_PER_SEC = 107      # count_tokens 실측 보정(실제 길이 대비 약 107토큰/초). 길이 추정용
 MAX_RUN_SEC = 15 * 60     # 분석 전체 시간 상한(파이프라인 지연 방지)
 DEFAULT_MODELS = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"]
 
@@ -129,7 +130,8 @@ def analyze(videos: list[dict]) -> str:
                         config=types.GenerateContentConfig(
                             media_resolution="MEDIA_RESOLUTION_LOW", temperature=0.2),
                     )
-                    print(f"[gemini] {v.get('video_id')} {m} {time.time() - t0:.0f}s 응답")
+                    um = getattr(resp, "usage_metadata", None)
+                    print(f"[gemini] {v.get('video_id')} {m} {time.time() - t0:.0f}s 응답 입력토큰={getattr(um, 'prompt_token_count', '?')}")
                     txt = (resp.text or "").strip()
                     if txt:
                         v["분석"], v["분석상태"] = txt, f"완료({m})"
@@ -144,6 +146,15 @@ def analyze(videos: list[dict]) -> str:
                     last = f"{type(e).__name__}: {msg[:90]}"
                     print(f"[gemini] {v.get('video_id')} {m} {time.time() - t0:.0f}s 오류 {last}")
                     if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+                        full = re.sub(r"\s+", " ", msg)
+                        print(f"[gemini] 429 상세: {full[:1500]}")
+                        mm = re.search(r"retry in ([\d.]+)s", msg) or re.search(r"retryDelay'?\"?: ?'?\"?([\d.]+)s", msg)
+                        delay = float(mm.group(1)) if mm else None
+                        per_day = "PerDay" in msg or "per day" in msg.lower()
+                        if (not per_day) and delay is not None and delay <= 90 and attempt < 2:
+                            print(f"[gemini] 분당 한도로 판단, {delay + 2:.0f}초 대기 후 재시도")
+                            time.sleep(delay + 2)
+                            continue
                         quota_hit = True
                         break
                     if "404" in msg or "NOT_FOUND" in msg:
