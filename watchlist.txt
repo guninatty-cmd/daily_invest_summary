@@ -28,3 +28,16 @@ AVAV
 RDDT
 BE
 FSLR
+
+# 리포트 언급 종목 (종가 수집용)
+META
+AMZN
+AVGO
+ORCL
+SNPS
+NBIS
+OXY
+DLTR
+NEE
+PWR
+ACN
