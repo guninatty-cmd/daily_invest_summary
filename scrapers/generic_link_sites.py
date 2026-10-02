@@ -66,6 +66,7 @@ SITES = [
         "name": "순살브리핑",
         "list_url": "https://soonsal.com/newsletters/",
         "href_pattern": r"soonsal\.com/newsletters/\d{4}/\d+\.html",
+        "max_items": 14,   # 보관함 전체(수백 건)가 아니라 최신 호만
     },
     {
         "name": "삼성 KoAct 인사이트",
@@ -94,6 +95,8 @@ def _extract(html: str, site: dict) -> list[dict]:
             continue
         seen.add(link)
         items.append({"출처": site["name"], "제목": title, "링크": link})
+        if site.get("max_items") and len(items) >= site["max_items"]:
+            break
     return items
 
 
