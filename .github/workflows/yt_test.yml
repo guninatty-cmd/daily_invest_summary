@@ -2,9 +2,9 @@ name: YT test
 on:
   workflow_dispatch:
 jobs:
-  yt-gemini-test:
+  diag:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -12,33 +12,32 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
       - run: pip install -r requirements.txt
-      - name: 유튜브 수집 + Gemini 분석 + 드라이브 업로드
+      - name: 길이 확인 진단
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GAS_WEBHOOK_URL: ${{ secrets.GAS_WEBHOOK_URL }}
-          GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
         run: |
           python -u - <<'PY'
-          import os, pandas as pd
-          from common import get_window
-          from scrapers.youtube import scrape_youtube
-          from triage import annotate, load_watch_tickers
-          from youtube_gemini import analyze
-          from drive_upload import upload_to_drive_via_gas
-          w = get_window()
-          vids = scrape_youtube()
-          annotate(vids, ("제목",), load_watch_tickers())
-          print("수집", len(vids), "건 / 후보Y", sum(v.get("후보") == "Y" for v in vids))
-          print(analyze(vids))
-          rows = [{"채널": v["채널"], "제목": v["제목"], "후보": v.get("후보"), "점수": v.get("점수"),
-                   "길이(분)": round(v["길이초"] / 60) if v.get("길이초") else "", "라이브": v.get("라이브"),
-                   "분석상태": v.get("분석상태"), "영상분석": v.get("분석", ""), "링크": v["링크"]} for v in vids]
-          rows.sort(key=lambda r: (r["분석상태"] is None or not str(r["분석상태"]).startswith("완료"), -(r["점수"] or 0)))
-          os.makedirs("downloads", exist_ok=True)
-          date = f"{w[1]:%Y-%m-%d}"
-          path = f"downloads/{date}_유튜브_Gemini분석_테스트.xlsx"
-          pd.DataFrame(rows).to_excel(path, index=False)
-          for r in rows:
-              print(r["분석상태"], "|", r["후보"], "|", r["길이(분)"], "분 |", r["채널"], "|", r["제목"][:50])
-          print("업로드:", upload_to_drive_via_gas(path, f"{date}_주식리포트_모음"))
+          import os, re, requests
+          ids = ["XoTewrPM5yg", "bYKRJsARXKQ", "hjSiz0Xaohc", "7RFZ9lP0tqg"]
+          H = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Accept-Language": "en-US,en;q=0.9"}
+          for vid in ids:
+              for label, ck in (("plain", {}), ("consent", {"CONSENT": "YES+1", "SOCS": "CAI"})):
+                  try:
+                      r = requests.get("https://www.youtube.com/watch?v=" + vid, headers=H, cookies=ck, timeout=15)
+                      t = r.text
+                      print(vid, label, r.status_code, len(t), "len=", re.findall(r'lengthSeconds"\s*:\s*"(\d+)"', t)[:1], "player=", "ytInitialPlayerResponse" in t, "consent=", "consent.youtube" in t or "consent.google" in t, "playab=", re.findall(r'"playabilityStatus":\{"status":"(\w+)"', t)[:1], "live=", re.findall(r'"isLiveContent"\s*:\s*(\w+)', t)[:1])
+                  except Exception as e:
+                      print(vid, label, "ERR", type(e).__name__, str(e)[:80])
+          try:
+              from google import genai
+              from google.genai import types
+              c = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+              for vid in ids[:3]:
+                  try:
+                      n = c.models.count_tokens(model="gemini-3.8-flash", contents=types.Content(parts=[types.Part(file_data=types.FileData(file_uri="https://www.youtube.com/watch?v=" + vid)), types.Part(text="x")]))
+                      print(vid, "count_tokens", n.total_tokens)
+                  except Exception as e:
+                      print(vid, "count_tokens ERR", type(e).__name__, str(e)[:120])
+          except Exception as e:
+              print("genai ERR", e)
           PY
