@@ -8,3 +8,5 @@ pypdf
 telethon
 yfinance
 yt-dlp
+
+google-genai>=1.0.0
