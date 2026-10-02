@@ -1,0 +1,17 @@
+name: YT test
+on: workflow_dispatch
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -U yt-dlp youtube-transcript-api
+      - name: yt-dlp subtitle test
+        run: |
+          yt-dlp --skip-download --write-auto-subs --sub-langs "ko.*" -o "t_%(id)s" "https://www.youtube.com/watch?v=XoTewrPM5yg" 2>&1 | tail -12 || true
+          ls
+      - name: transcript api test
+        run: |
+          python -c "from youtube_transcript_api import YouTubeTranscriptApi as Y; print(len(Y().fetch('XoTewrPM5yg',languages=['ko']).to_raw_data()))" 2>&1 | tail -4 || true
