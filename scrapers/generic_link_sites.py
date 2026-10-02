@@ -25,12 +25,12 @@ SITES = [
     {
         "name": "매경 미라클AI 뉴스레터",
         "list_url": "https://www.mk.co.kr/mirakleai/newsletter",
-        "href_pattern": r"mk\.co\.kr/(news|mirakleai)/.+\d{6,}",
+        "href_pattern": r"mirakleai/newsletter/page/\d+",
     },
     {
         "name": "KB Think",
         "list_url": "https://kbthink.com/investment.html",
-        "href_pattern": r"kbthink\.com/.+\.html",
+        "href_pattern": r"kbthink\.com/investment/[\w-]+/\d+/[\w-]+\.html",
     },
     {
         "name": "KB금융 리서치",
@@ -45,7 +45,7 @@ SITES = [
     {
         "name": "KB자산운용 RISE ETF 인사이트",
         "list_url": "https://kbam.co.kr/insights",
-        "href_pattern": r"kbam\.co\.kr/insights?/[\w-]+",
+        "href_pattern": r"kbam\.co\.kr/insights/(?!guide)[\w-]+",
     },
     {
         "name": "PLUS ETF 리포트",
@@ -65,12 +65,12 @@ SITES = [
     {
         "name": "순살브리핑",
         "list_url": "https://soonsal.com/newsletters/",
-        "href_pattern": r"soonsal\.com/newsletters/[\w-]+",
+        "href_pattern": r"soonsal\.com/newsletters/\d{4}/\d+\.html",
     },
     {
         "name": "삼성 KoAct 인사이트",
         "list_url": "https://www.samsungactive.co.kr/insight/koactinsight/list.do?seq=0",
-        "href_pattern": r"koactinsight/(view|detail)\.do",
+        "href_pattern": r"koactview-view\.do",
     },
 ]
 
@@ -82,12 +82,14 @@ def _extract(html: str, site: dict) -> list[dict]:
     items = []
     for a in soup.find_all("a", href=True):
         href = a["href"]
-        if not pattern.search(href):
+        if href.startswith(("javascript:", "#", "mailto:")):
+            continue
+        link = href if href.startswith("http") else requests.compat.urljoin(site["list_url"], href)
+        if not pattern.search(link):   # 상대주소(/path)도 처리하기 위해 절대주소로 바꾼 뒤 패턴 검사
             continue
         title = a.get_text(strip=True)
         if not title or len(title) < 4:
             continue
-        link = href if href.startswith("http") else requests.compat.urljoin(site["list_url"], href)
         if link in seen:
             continue
         seen.add(link)
