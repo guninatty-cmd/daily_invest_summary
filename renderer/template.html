@@ -1,0 +1,544 @@
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+@page {
+    /* 페이지 높이는 갤럭시 S25의 물리적 화면 전체 높이(279.9mm)가 아니라, 실제 PDF
+       뷰어 앱(굿노트 등)에서 상태바 · 앱 툴바를 제외하고 스크롤 없이 "한 화면"에
+       보이는 영역 높이로 잡는다. 사용자가 실제 폰 화면 캡처(1080x2008px, 폭
+       1080px = 129.2mm 기준 환산 시 약 240.2mm)를 기준으로 요청한 값이다. 이전
+       버전은 페이지 하나가 화면보다 커서 한 페이지 안에서도 스크롤이 필요했다. */
+    size: 129.2mm 240mm;
+    margin: 9mm 6mm 9mm 6mm;
+}
+* { box-sizing: border-box; }
+body {
+    font-family: "Noto Sans CJK KR", sans-serif;
+    color: #1f2937;
+    background: #ffffff;
+    font-size: 15pt;
+    line-height: 1.5;
+    margin: 0;
+}
+/* ---------- Cover ---------- */
+.cover {
+    padding-top: 6mm;
+}
+.cover-title-row {
+    display: flex;
+    align-items: baseline;
+    gap: 2.5mm;
+    margin-bottom: 6mm;
+    flex-wrap: wrap;
+}
+.cover h1 {
+    font-size: 23pt;
+    font-weight: 700;
+    margin: 0;
+    color: #111827;
+}
+.cover .period {
+    font-size: 12.5pt;
+    color: #9ca3af;
+}
+.cover-rule {
+    height: 2.2pt;
+    background: #2563eb;
+    margin-top: 0;
+    margin-bottom: 6mm;
+    border-radius: 2px;
+}
+/* ---------- Cover table of contents ---------- */
+.toc-section {
+    margin-bottom: 5mm;
+}
+.toc-head {
+    display: flex;
+    align-items: baseline;
+    gap: 2.5mm;
+    font-size: 16.5pt;
+    font-weight: 700;
+    margin-bottom: 2.5mm;
+    padding-left: 2.5mm;
+    border-left: 4px solid var(--toc-accent);
+}
+.toc-head .toc-count {
+    font-size: 12pt;
+    font-weight: 400;
+    color: #9ca3af;
+}
+.toc-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+.toc-list li {
+    font-size: 14.5pt;
+    color: #374151;
+    padding: 1.6mm 0 1.6mm 2.5mm;
+    border-bottom: 1px solid #f1f2f4;
+}
+.toc-list li:last-child {
+    border-bottom: none;
+}
+.toc-more {
+    font-size: 12pt;
+    color: #9ca3af;
+    padding: 1.6mm 0 0 2.5mm;
+}
+/* ---------- Section ---------- */
+.section {
+    /* 2026-07 업데이트: 컨텐츠(카드/팩트시트)가 여러 페이지에 걸쳐질 때 각 컨텐츠의
+       시작점이 항상 페이지 맨 위이길 바란다는 사용자 요청으로, 매크로/산업/개별종목/
+       참고 증권사 리포트 섹션 모두 매번 새 페이지에서 시작한다(예전에는 첫 섹션에만
+       걸었다). 이로 인해 이전 페이지 아래쪽에 빈 공간이 남을 수 있는데, 이는 "시작점
+       정렬"을 위해 의도적으로 받아들이는 트레이드오프다 — 빈 페이지 문제로 오인해 이
+       규칙을 다시 :first-of-type으로 되돌리지 마라. */
+    break-before: page;
+}
+.section-head {
+    display: flex;
+    align-items: baseline;
+    gap: 3mm;
+    border-bottom: 2.6pt solid var(--accent);
+    padding-bottom: 2.5mm;
+    margin-bottom: 6mm;
+    break-after: avoid;
+}
+.section-head h2 {
+    font-size: 19.5pt;
+    font-weight: 700;
+    color: var(--accent);
+    margin: 0;
+}
+.section-head .count {
+    font-size: 13pt;
+    color: #9ca3af;
+}
+/* ---------- Card ---------- */
+.card {
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-left: 5px solid var(--accent);
+    border-radius: 9px;
+    padding: 5mm 5mm;
+    margin-bottom: 4.5mm;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+    /* 2026-07 업데이트: 카드가 여러 페이지에 걸쳐질 때도 각 카드(컨텐츠 하나)의
+       시작점이 항상 새 페이지 맨 위이길 바란다는 사용자 요청으로, 카드마다 강제
+       개행을 건다(예전에는 이전 카드가 끝난 자리에서 바로 이어졌다). 바로 다음
+       규칙(.section-head + .card)이 섹션의 첫 카드만 예외로 두어 헤더와 한 페이지에
+       붙어 있게 한다. */
+    break-before: page;
+}
+/* 섹션 제목 바로 다음 첫 카드는 강제 개행하지 않는다 -- 섹션 자체가 이미 새
+   페이지에서 시작하므로(.section 규칙), 헤더와 첫 카드가 같은 페이지 맨 위에
+   함께 있어야 헤더만 페이지 아래쪽에 혼자 남는 문제가 생기지 않는다. */
+.section-head + .card {
+    break-before: avoid;
+}
+.tag-row {
+    margin-bottom: 2.5mm;
+    break-after: avoid;
+    break-inside: avoid;
+}
+.tag {
+    display: inline-block;
+    font-size: 11.5pt;
+    font-weight: 700;
+    padding: 0.9mm 2.6mm;
+    border-radius: 4px;
+    margin-right: 1.8mm;
+    color: #ffffff;
+}
+.tag-positive { background: #16a34a; }
+.tag-negative { background: #dc2626; }
+.tag-neutral { background: #64748b; }
+.tag-continued { background: #6366f1; }
+.tag-holding { background: #db2777; }
+.tag-unverified { background: #9ca3af; }
+.tag-ticker {
+    display: inline-block;
+    font-size: 11.5pt;
+    font-weight: 700;
+    padding: 0.8mm 2.4mm;
+    border-radius: 4px;
+    margin-right: 1.6mm;
+    color: #4b5563;
+    background: #f3f4f6;
+    border: 1px solid #d1d5db;
+}
+.tag-ticker-watch {
+    color: #92400e;
+    background: #fef3c7;
+    border: 1px solid #f59e0b;
+}
+.card h3 {
+    font-size: 17.5pt;
+    font-weight: 700;
+    margin: 0 0 4mm 0;
+    color: #111827;
+    line-height: 1.5;
+    break-after: avoid;
+    break-inside: avoid;
+}
+.body-text {
+    break-after: avoid;
+    font-size: 15.5pt;
+    color: #374151;
+    margin: 0 0 4mm 0;
+    line-height: 1.78;
+    text-align: left;
+    orphans: 3;
+    widows: 3;
+}
+.body-text p {
+    margin: 0 0 5.5mm 0;
+    orphans: 3;
+    widows: 3;
+}
+.body-text p:last-child {
+    margin-bottom: 0;
+    break-after: avoid;
+}
+.body-text mark {
+    background: #fef08a;
+    color: #1f2937;
+    padding: 0 1mm;
+    border-radius: 2px;
+}
+.impact-box {
+    font-size: 15pt;
+    background: #eef2fb;
+    border-radius: 5px;
+    padding: 3.5mm 4mm; line-height: 1.7;
+    margin-bottom: 0;
+    color: #374151;
+    break-inside: avoid;
+}
+.impact-box .label {
+    font-weight: 700;
+    color: #2563eb;
+}
+/* ---------- pdf reports section ---------- */
+.pdfrep .section-head { --accent: #7c3aed; }
+.pdfrep-row {
+    break-inside: avoid;
+    border-bottom: 1px solid #e5e7eb;
+    padding: 3.5mm 0;
+}
+.pdfrep-row .t { font-size: 16pt; color: #111827; font-weight: 700; }
+.pdfrep-row .b { font-size: 12pt; color: #7c3aed; margin-left: 2mm; }
+.pdfrep-row .r { font-size: 13pt; color: #6b7280; margin-top: 1mm; }
+.pdfrep-row .f { font-size: 11pt; color: #b0b0b0; margin-top: 1mm; }
+/* ---------- Factsheet cover (divider page for 증권사 리포트 팩트시트) ---------- */
+.factsheet-cover {
+    break-before: page;
+    padding-top: 6mm;
+}
+.factsheet-cover .cover-rule {
+    background: #7c3aed;
+}
+.fs-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+.fs-item {
+    display: flex;
+    align-items: baseline;
+    gap: 3mm;
+    padding: 2.6mm 0;
+    border-bottom: 1px solid #f1f2f4;
+}
+.fs-item:last-child { border-bottom: none; }
+.fs-tag {
+    flex: 0 0 auto;
+    font-size: 11pt;
+    font-weight: 700;
+    color: #7c3aed;
+    background: #f3ecfd;
+    border-radius: 3px;
+    padding: 0.9mm 2.2mm;
+    white-space: nowrap;
+}
+.fs-title {
+    font-size: 13pt;
+    color: #374151;
+}
+.fs-more {
+    font-size: 12pt;
+    color: #9ca3af;
+    padding: 1.6mm 0 0 0;
+}
+/* ---------- Factsheet report card (개별 리포트 팩트시트 페이지) ---------- */
+/* 2026-07 업데이트: 팩트시트 리포트도 카드와 마찬가지로 리포트마다(첫 리포트뿐
+   아니라 전부) 새 페이지에서 시작한다 -- 각 컨텐츠의 시작점을 페이지 맨 위로
+   맞추기 위한 사용자 요청. 짧은 리포트 뒤에 다음 페이지 아래쪽 공간이 남을 수
+   있으나 의도된 트레이드오프다. */
+.sheet { break-before: page; }
+.sheet-inner {
+    border: 1px solid #e5e7eb;
+    border-left: 6px solid #7c3aed;
+    border-radius: 10px;
+    padding: 5.5mm 5mm;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+}
+.sheet-inner .body-text { margin-bottom: 3mm; line-height: 1.7; orphans: 3; widows: 3; }
+.sheet-inner .body-text p { margin: 0 0 4.5mm 0; orphans: 3; widows: 3; }
+.sheet-inner .body-text p:last-child { margin-bottom: 0; }
+.type-tag {
+    display: inline-block;
+    font-size: 12pt;
+    font-weight: 700;
+    color: #ffffff;
+    background: #7c3aed;
+    padding: 1mm 3mm;
+    border-radius: 4px;
+    margin-bottom: 3mm;
+    break-after: avoid;
+}
+.sheet h2 {
+    font-size: 20pt;
+    font-weight: 700;
+    color: #111827;
+    margin: 0 0 2mm 0;
+    line-height: 1.35;
+    break-after: avoid;
+    break-inside: avoid;
+}
+.sheet .meta {
+    font-size: 12.5pt;
+    color: #9ca3af;
+    margin-bottom: 4mm;
+    break-after: avoid;
+}
+.price-box {
+    display: flex;
+    gap: 4mm;
+    background: #f5f3ff;
+    border-radius: 7px;
+    padding: 3.5mm 5mm;
+    margin-bottom: 4mm;
+    flex-wrap: wrap;
+    break-inside: avoid;
+}
+.price-box .pitem { font-size: 13pt; color: #4c1d95; }
+.price-box .pitem b { display:block; font-size: 16.5pt; color: #111827; }
+.rating-bar {
+    display: flex; height: 4mm; border-radius: 4px; overflow: hidden; margin-top: 1.5mm; width: 100%;
+}
+.rating-bar span { display:block; }
+.rb-buy { background:#16a34a; }
+.rb-hold { background:#64748b; }
+.rb-sell { background:#dc2626; }
+.rating-legend {
+    display: flex; gap: 3mm; margin-top: 1.3mm; font-size: 11.3pt; color:#4c1d95;
+}
+.rating-legend .lg-dot { display:inline-block; width:2.2mm; height:2.2mm; border-radius:50%; margin-right:1mm; vertical-align:middle; }
+.summary-list { margin: 0 0 2mm 0; padding: 0; list-style: none; }
+.summary-list li {
+    font-size: 15pt;
+    color: #374151;
+    padding: 1.3mm 0 1.3mm 4.5mm;
+    position: relative;
+    break-inside: avoid;
+}
+.summary-list li:before {
+    content: "";
+    position: absolute;
+    left: 0; top: 3.2mm;
+    width: 1.8mm; height: 1.8mm;
+    background: #7c3aed;
+    border-radius: 50%;
+}
+.two-col { margin-bottom: 2mm; }
+.col-box {
+    border-radius: 7px;
+    padding: 3.5mm 4.5mm 4.5mm 4.5mm;
+    margin-bottom: 3mm;
+    break-inside: avoid;
+    overflow: visible;
+}
+.col-box:last-child { margin-bottom: 0; }
+.col-points { background: #eef2fb; }
+.col-risks { background: #fef2f2; }
+.col-box .label { font-weight: 700; font-size: 13pt; margin-bottom: 1.5mm; display:block; }
+.col-points .label { color: #2563eb; }
+.col-risks .label { color: #b91c1c; }
+.col-box ul { margin: 0; padding-left: 3.6mm; }
+.col-box li { font-size: 14pt; color: #374151; margin-bottom: 1.3mm; line-height: 1.45; }
+.col-box li:last-child { margin-bottom: 0; }
+/* ---------- Picks list (섹터 딥다이브 리포트의 종목별 코멘트) ----------
+   A narrow 2-column table (종목 | 코멘트) reads poorly on a ~117mm-wide mobile
+   page -- the comment column gets squeezed and wraps awkwardly. Render each pick
+   as a full-width stacked block instead: bold ticker name on its own line, comment
+   as a normal-width paragraph directly below it. */
+.picks-list { margin: 0 0 4mm 0; }
+.picks-list-title { font-weight: 700; font-size: 12pt; color: #7c3aed; margin-bottom: 2mm; }
+.pick-item {
+    break-inside: avoid;
+    padding: 2.6mm 0;
+    border-bottom: 1px solid #eee;
+}
+.pick-item:last-child { border-bottom: none; }
+.pick-item .tk { display: block; font-size: 14pt; font-weight: 700; color: #111827; margin-bottom: 1mm; }
+.pick-item .cm { display: block; font-size: 13.5pt; color: #374151; line-height: 1.5; }
+.filename-foot { font-size: 11pt; color: #b0b0b0; margin-top: 1mm; break-before: avoid; break-inside: avoid; }
+</style>
+</head>
+<body>
+<div class="cover">
+    <div class="cover-title-row">
+        <h1><span style="color:#2563eb;">&#10022;</span> {{ data.report_title }}</h1>
+        <span class="period">{{ data.report_date }}</span>
+    </div>
+    <div class="cover-rule"></div>
+    {% for sec in ['macro', 'market', 'industry', 'stock', 'youtube'] %}
+    {% set meta = section_meta[sec] %}
+    {% set items = data[sec] %}
+    {% if items %}
+    <div class="toc-section" style="--toc-accent: {{ meta.color }};">
+        <div class="toc-head" style="color: {{ meta.color }};">
+            {{ meta.label }} <span class="toc-count">{{ items | length }}건</span>
+        </div>
+        <ul class="toc-list">
+            {% for item in cover_toc[sec].shown %}
+            <li>{{ item.title }}</li>
+            {% endfor %}
+        </ul>
+        {% if cover_toc[sec].hidden > 0 %}
+        <div class="toc-more">그 외 {{ cover_toc[sec].hidden }}건</div>
+        {% endif %}
+    </div>
+    {% endif %}
+    {% endfor %}
+</div>
+{% for sec in ['macro', 'market', 'industry', 'stock', 'youtube'] %}
+{% set meta = section_meta[sec] %}
+<div class="section" style="--accent: {{ meta.color }};">
+    <div class="section-head">
+        <h2>{{ meta.label }}</h2>
+        <span class="count">{{ data[sec] | length }}건</span>
+    </div>
+    {% for item in data[sec] %}
+    <div class="card" style="--accent: {{ meta.color }};">
+        <div class="tag-row">
+            <span class="tag {{ sentiment_class[item.sentiment] }}">{{ item.sentiment }}</span>
+            {% if item.holding %}<span class="tag tag-holding">보유</span>{% endif %}
+            {% if item.continued %}<span class="tag tag-continued">전일 계속</span>{% endif %}
+            {% if item.unverified %}<span class="tag tag-unverified">미확인</span>{% endif %}
+            {% for t in item.tickers %}<span class="tag-ticker{% if in_watchlist(t) %} tag-ticker-watch{% endif %}">{% if in_watchlist(t) %}★ {% endif %}{{ t }}</span>{% endfor %}
+        </div>
+        <h3>{{ item.title }}</h3>
+        <div class="body-text">{{ item.body | safe }}</div>
+        <div class="impact-box"><span class="label">영향 ·</span> {{ item.impact }}</div>
+    </div>
+    {% endfor %}
+</div>
+{% endfor %}
+{% if data.pdf_reports %}
+<div class="section pdfrep">
+    <div class="section-head">
+        <h2>참고 증권사 리포트</h2>
+        <span class="count">{{ data.pdf_reports | length }}건</span>
+    </div>
+    {% for r in data.pdf_reports %}
+    <div class="pdfrep-row">
+        <div><span class="t">{{ r.title }}</span>{% if r.broker %}<span class="b">{{ r.broker }}</span>{% endif %}</div>
+        <div class="r">{{ r.reason }}</div>
+        {% if r.filename %}<div class="f">{{ r.filename }}</div>{% endif %}
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+{% if data.factsheet_reports %}
+<div class="factsheet-cover">
+    <div class="cover-title-row">
+        <h1><span style="color:#7c3aed;">&#10022;</span> 증권사 리포트 팩트시트</h1>
+        <span class="period">{{ data.factsheet_reports | length }}건</span>
+    </div>
+    <div class="cover-rule"></div>
+    <ul class="fs-list">
+        {% for r in factsheet_cover.shown %}
+        <li class="fs-item">
+            <span class="fs-tag">{{ r.type_label }}</span>
+            <span class="fs-title">{{ r.title }}</span>
+        </li>
+        {% endfor %}
+    </ul>
+    {% if factsheet_cover.hidden > 0 %}
+    <div class="fs-more">그 외 {{ factsheet_cover.hidden }}건</div>
+    {% endif %}
+</div>
+{% for s in data.factsheet_reports %}
+<div class="sheet">
+    <div class="sheet-inner">
+        <div class="type-tag">{{ s.type_label }}</div>
+        <h2>{{ s.title }}</h2>
+        {% if s.meta %}<div class="meta">{{ s.meta }}</div>{% endif %}
+        {% if s.price_box %}
+        <div class="price-box">
+            {% for p in s.price_box %}
+            <div class="pitem">{{ p.label }}<b>{{ p.value }}</b></div>
+            {% endfor %}
+            {% if s.rating_split %}
+            <div style="flex-basis:100%;">
+                <div class="rating-bar">
+                    {% for r in s.rating_split %}
+                    <span class="rb-{{ r.cls }}" style="width: {{ r.pct }}%;"></span>
+                    {% endfor %}
+                </div>
+                <div class="rating-legend">
+                    {% for r in s.rating_split %}
+                    <span><span class="lg-dot rb-{{ r.cls }}"></span>{{ r.label }} {{ r.pct }}%</span>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+        </div>
+        {% endif %}
+        {% if s.summary_bullets %}
+        <ul class="summary-list">
+            {% for b in s.summary_bullets %}
+            <li>{{ b }}</li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+        <div class="body-text">{{ s.body | safe }}</div>
+        {% if s.points or s.risks %}
+        <div class="two-col">
+            {% if s.points %}
+            <div class="col-box col-points">
+                <span class="label">투자 포인트</span>
+                <ul>{% for p in s.points %}<li>{{ p }}</li>{% endfor %}</ul>
+            </div>
+            {% endif %}
+            {% if s.risks %}
+            <div class="col-box col-risks">
+                <span class="label">리스크</span>
+                <ul>{% for r in s.risks %}<li>{{ r }}</li>{% endfor %}</ul>
+            </div>
+            {% endif %}
+        </div>
+        {% endif %}
+        {% if s.picks %}
+        <div class="picks-list">
+            <div class="picks-list-title">종목별 코멘트</div>
+            {% for pk in s.picks %}
+            <div class="pick-item">
+                <span class="tk">{{ pk.name }}</span>
+                <span class="cm">{{ pk.comment }}</span>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% if s.filename %}<div class="filename-foot">원본: {{ s.filename }}</div>{% endif %}
+    </div>
+</div>
+{% endfor %}
+{% endif %}
+</body>
+  </html>
