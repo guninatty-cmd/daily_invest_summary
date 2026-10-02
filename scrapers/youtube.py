@@ -43,6 +43,10 @@ CHANNELS = [  # (채널명, 채널ID)
 
 NS = {"atom": "http://www.w3.org/2005/Atom", "yt": "http://www.youtube.com/xml/schemas/2015"}
 LIVE_RE = re.compile(r'"liveBroadcastContent"\s*:\s*"(\w+)"')
+LEN_RE = re.compile(r'"lengthSeconds"\s*:\s*"(\d+)"')
+PAST_LIVE_RE = re.compile(r'"isLiveContent"\s*:\s*true')
+LIVE_TITLE_RE = re.compile(r"라이브|LIVE|생방송|다시보기|풀영상|\bstream", re.I)
+MAX_SECONDS = 3600  # 1시간 초과 영상은 분석 제외
 
 
 def _parse_feed(channel_name: str, channel_id: str) -> list[dict]:
@@ -76,13 +80,25 @@ def _is_shorts(video_id: str) -> bool:
         return False
 
 
-def _is_live_or_upcoming(video_id: str) -> bool:
+def _watch_info(video_id: str, title: str = "") -> dict:
+    """watch 페이지 1회 조회로 라이브 여부/길이를 얻는다. 길이를 모르면 제목으로 라이브성 판단."""
+    info = {"live": False, "sec": None}
     try:
         res = requests.get(f"https://www.youtube.com/watch?v={video_id}", headers=HEADERS, timeout=8)
-        m = LIVE_RE.search(res.text)
-        return bool(m) and m.group(1) in ("live", "upcoming")
+        t = res.text
+        m = LIVE_RE.search(t)
+        if m and m.group(1) in ("live", "upcoming"):
+            info["live"] = True
+        if PAST_LIVE_RE.search(t):          # 라이브였다가 종료된 영상(다시보기)
+            info["live"] = True
+        n = LEN_RE.search(t)
+        if n:
+            info["sec"] = int(n.group(1))
     except Exception:
-        return False
+        pass
+    if info["sec"] is None and LIVE_TITLE_RE.search(title or ""):
+        info["live"] = True
+    return info
 
 
 def scrape_youtube() -> list[dict]:
@@ -100,7 +116,16 @@ def scrape_youtube() -> list[dict]:
         return []
     print(f"🔎 유튜브 {len(candidates)}건 중 쇼츠/라이브 확인 중...")
     with concurrent.futures.ThreadPoolExecutor(max_workers=15) as ex:
-        flags = list(ex.map(lambda it: _is_shorts(it["video_id"]) or _is_live_or_upcoming(it["video_id"]), candidates))
-    kept = [it for it, bad in zip(candidates, flags) if not bad]
-    print(f"   → 쇼츠/라이브 {len(candidates) - len(kept)}건 제외, {len(kept)}건 유지")
+        shorts = list(ex.map(lambda it: _is_shorts(it["video_id"]), candidates))
+        infos = list(ex.map(lambda it: _watch_info(it["video_id"], it["제목"]), candidates))
+    kept = []
+    for it, sh, inf in zip(candidates, shorts, infos):
+        if sh:
+            continue
+        it["길이초"] = inf["sec"]
+        it["라이브"] = inf["live"]
+        kept.append(it)   # 라이브 제외는 하지 않고 표시만(분석 단계에서 제외). 목록은 유지
+    n_live = sum(1 for it in kept if it["라이브"])
+    n_long = sum(1 for it in kept if (it["길이초"] or 0) > MAX_SECONDS)
+    print(f"   → 쇼츠 {len(candidates) - len(kept)}건 제외, {len(kept)}건 유지 (라이브/다시보기 {n_live}, 1시간 초과 {n_long}: 분석 제외)")
     return kept
