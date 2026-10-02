@@ -11,7 +11,8 @@ import time
 MAX_SEC = 3600            # 영상 1개 상한 (1시간)
 MAX_TOTAL_SEC = 7 * 3600  # 하루 합계 상한 (무료 한도 8시간 안쪽)
 MAX_VIDEOS = 12
-MAX_RUN_SEC = 20 * 60     # 분석 전체 시간 상한(파이프라인 지연 방지)
+TOKENS_PER_SEC = 290      # 유튜브 영상 토큰 환산(프레임 258 + 음성 32 /초). 길이 추정용
+MAX_RUN_SEC = 15 * 60     # 분석 전체 시간 상한(파이프라인 지연 방지)
 DEFAULT_MODELS = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"]
 
 PROMPT = """이 유튜브 영상을 미국 주식 투자자 관점에서 한국어로 요약해라. 광고/인사/잡담은 빼고 아래 형식만 출력.
@@ -50,29 +51,59 @@ def pick_targets(videos: list[dict]) -> tuple[list[dict], dict]:
     return targets, skip
 
 
+def _estimate_len(client, types, models, v):
+    """GitHub IP에서는 유튜브 페이지로 길이를 못 읽으므로 Gemini count_tokens 로 길이를 추정한다(영상 분석 비용 없음)."""
+    for m in models:
+        for attempt in range(2):
+            try:
+                n = client.models.count_tokens(model=m, contents=types.Content(parts=[
+                    types.Part(file_data=types.FileData(file_uri=v["링크"])), types.Part(text="x")]))
+                return int(n.total_tokens / TOKENS_PER_SEC)
+            except Exception as e:
+                msg = str(e)
+                if "404" in msg or "NOT_FOUND" in msg:
+                    break
+                if "503" in msg or "UNAVAILABLE" in msg:
+                    time.sleep(5)
+                    continue
+                return None      # 라이브/비공개/기타 오류는 길이 불명으로 두어 분석에서 제외
+    return None
+
+
 def analyze(videos: list[dict]) -> str:
     """videos 각 항목에 '분석', '분석상태' 를 채운다. 반환: 로그 한 줄."""
     key = os.environ.get("GEMINI_API_KEY", "").strip()
-    targets, skip = pick_targets(videos)
-    for v in videos:
-        v["분석"] = ""
-        v["분석상태"] = skip.get(v.get("video_id", ""), "대기")
     if not key:
+        targets, skip = pick_targets(videos)
+        for v in videos:
+            v["분석"] = ""
+            v["분석상태"] = skip.get(v.get("video_id", ""), "대기")
         for v in targets:
             v["분석상태"] = "GEMINI_API_KEY 없음"
         return "Gemini 분석 건너뜀: GEMINI_API_KEY 미설정"
-    if not targets:
-        return "Gemini 분석 대상 0건"
     try:
         from google import genai
         from google.genai import types
     except Exception as e:
-        for v in targets:
-            v["분석상태"] = "google-genai 미설치"
+        for v in videos:
+            v["분석"], v["분석상태"] = "", "google-genai 미설치"
         return f"Gemini 분석 실패: {e}"
 
     client = genai.Client(api_key=key, http_options=types.HttpOptions(timeout=240000))  # 요청당 4분 상한(무한 대기 방지)
     models = _models()
+    n_est = 0
+    for v in videos:       # 길이를 모르는 후보 영상은 토큰 수로 길이 추정
+        if v.get("후보") == "Y" and not v.get("라이브") and v.get("길이초") is None:
+            sec = _estimate_len(client, types, models, v)
+            if sec is not None:
+                v["길이초"], v["길이추정"] = sec, True
+                n_est += 1
+    targets, skip = pick_targets(videos)
+    for v in videos:
+        v["분석"] = ""
+        v["분석상태"] = skip.get(v.get("video_id", ""), "대기")
+    if not targets:
+        return f"Gemini 분석 대상 0건 (길이 추정 {n_est}건)"
     ok = fail = 0
     quota_hit = False
     t_start = time.time()
@@ -129,4 +160,4 @@ def analyze(videos: list[dict]) -> str:
             v["분석상태"] = f"실패: {last}"
             fail += 1
         time.sleep(1)
-    return f"Gemini 분석 완료 {ok}건 / 실패 {fail}건 / 대상 {len(targets)}건 (모델: {','.join(models[:2])})"
+    return f"Gemini 분석 완료 {ok}건 / 실패 {fail}건 / 대상 {len(targets)}건 / 길이추정 {n_est}건 (모델: {','.join(models[:2])})"
