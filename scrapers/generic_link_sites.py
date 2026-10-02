@@ -75,11 +75,8 @@ SITES = [
 ]
 
 
-def _scrape_one(site: dict) -> list[dict]:
-    res = requests.get(site["list_url"], headers=HEADERS, timeout=10)
-    res.raise_for_status()
-    soup = BeautifulSoup(res.text, "html.parser")
-
+def _extract(html: str, site: dict) -> list[dict]:
+    soup = BeautifulSoup(html, "html.parser")
     pattern = re.compile(site["href_pattern"])
     seen = set()
     items = []
@@ -98,6 +95,40 @@ def _scrape_one(site: dict) -> list[dict]:
     return items
 
 
+_driver = None
+
+
+def _render_html(url: str) -> str:
+    """자바스크립트로 그려지는 페이지용: 헤드리스 크롬으로 렌더링한 HTML (드라이버는 재사용)."""
+    global _driver
+    if _driver is None:
+        from selenium import webdriver
+        from selenium.webdriver.chrome.options import Options
+        o = Options()
+        for a in ("--headless=new", "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+                  "--window-size=1920,1080", f"--user-agent={HEADERS['User-Agent']}"):
+            o.add_argument(a)
+        _driver = webdriver.Chrome(options=o)
+        _driver.set_page_load_timeout(40)
+    _driver.get(url)
+    import time
+    time.sleep(4)
+    _driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+    time.sleep(2)
+    return _driver.page_source
+
+
+def _scrape_one(site: dict) -> list[dict]:
+    res = requests.get(site["list_url"], headers=HEADERS, timeout=10)
+    res.raise_for_status()
+    items = _extract(res.text, site)
+    if not items:   # 정적 HTML에 글 링크가 없으면 JS 렌더링 페이지로 보고 브라우저로 한 번 더 시도
+        items = _extract(_render_html(site["list_url"]), site)
+        if items:
+            print(f"   (브라우저 렌더링으로 수집: {site['name']})")
+    return items
+
+
 def scrape_generic_sites() -> list[dict]:
     all_items = []
     for site in SITES:
@@ -107,6 +138,13 @@ def scrape_generic_sites() -> list[dict]:
             all_items.extend(found)
         except Exception as e:
             print(f"⚠️ {site['name']} 수집 실패: {e}")
+    global _driver
+    if _driver is not None:
+        try:
+            _driver.quit()
+        except Exception:
+            pass
+        _driver = None
     return all_items
 
 
