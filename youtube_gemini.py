@@ -11,7 +11,8 @@ import time
 MAX_SEC = 3600            # 영상 1개 상한 (1시간)
 MAX_TOTAL_SEC = 7 * 3600  # 하루 합계 상한 (무료 한도 8시간 안쪽)
 MAX_VIDEOS = 12
-DEFAULT_MODELS = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-2.5-flash"]
+MAX_RUN_SEC = 20 * 60     # 분석 전체 시간 상한(파이프라인 지연 방지)
+DEFAULT_MODELS = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"]
 
 PROMPT = """이 유튜브 영상을 미국 주식 투자자 관점에서 한국어로 요약해라. 광고/인사/잡담은 빼고 아래 형식만 출력.
 핵심요약: 3~5줄 (영상의 결론과 근거)
@@ -74,42 +75,56 @@ def analyze(videos: list[dict]) -> str:
     models = _models()
     ok = fail = 0
     quota_hit = False
+    t_start = time.time()
     for v in targets:
         if quota_hit:
             v["분석상태"] = "무료 한도 소진"
             continue
+        if time.time() - t_start > MAX_RUN_SEC:
+            v["분석상태"] = "분석 시간 상한으로 건너뜀"
+            continue
         last = ""
         for m in list(models):
-            t0 = time.time()
-            try:
-                resp = client.models.generate_content(
-                    model=m,
-                    contents=types.Content(parts=[
-                        types.Part(file_data=types.FileData(file_uri=v["링크"])),
-                        types.Part(text=PROMPT),
-                    ]),
-                    config=types.GenerateContentConfig(
-                        media_resolution="MEDIA_RESOLUTION_LOW", temperature=0.2),
-                )
-                print(f"[gemini] {v.get('video_id')} {m} {time.time() - t0:.0f}s 응답")
-                txt = (resp.text or "").strip()
-                if txt:
-                    v["분석"], v["분석상태"] = txt, f"완료({m})"
-                    ok += 1
-                    models = [m] + [x for x in models if x != m]   # 성공 모델을 우선 사용
+            done = False
+            for attempt in range(3):          # 503(과부하)는 같은 모델로 최대 3번 재시도
+                t0 = time.time()
+                try:
+                    resp = client.models.generate_content(
+                        model=m,
+                        contents=types.Content(parts=[
+                            types.Part(file_data=types.FileData(file_uri=v["링크"])),
+                            types.Part(text=PROMPT),
+                        ]),
+                        config=types.GenerateContentConfig(
+                            media_resolution="MEDIA_RESOLUTION_LOW", temperature=0.2),
+                    )
+                    print(f"[gemini] {v.get('video_id')} {m} {time.time() - t0:.0f}s 응답")
+                    txt = (resp.text or "").strip()
+                    if txt:
+                        v["분석"], v["분석상태"] = txt, f"완료({m})"
+                        ok += 1
+                        models = [m] + [x for x in models if x != m]   # 성공 모델을 우선 사용
+                        done = True
+                    else:
+                        last = "빈 응답"
                     break
-                last = "빈 응답"
-            except Exception as e:
-                msg = str(e)
-                last = f"{type(e).__name__}: {msg[:90]}"
-                print(f"[gemini] {v.get('video_id')} {m} {time.time() - t0:.0f}s 오류 {last}")
-                if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
-                    quota_hit = True
+                except Exception as e:
+                    msg = str(e)
+                    last = f"{type(e).__name__}: {msg[:90]}"
+                    print(f"[gemini] {v.get('video_id')} {m} {time.time() - t0:.0f}s 오류 {last}")
+                    if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+                        quota_hit = True
+                        break
+                    if "404" in msg or "NOT_FOUND" in msg:
+                        models = [x for x in models if x != m] or models   # 없는 모델은 이후 건너뜀
+                        break
+                    if "503" in msg or "UNAVAILABLE" in msg:
+                        time.sleep(15 * (attempt + 1))
+                        continue
+                    time.sleep(2)
                     break
-                if "404" in msg or "NOT_FOUND" in msg:
-                    models = [x for x in models if x != m] or models   # 없는 모델은 이후 건너뜀
-                    continue
-                time.sleep(2)
+            if done or quota_hit:
+                break
         if not v["분석"]:
             v["분석상태"] = f"실패: {last}"
             fail += 1
