@@ -133,7 +133,7 @@ def write_candidate_txt(path, window, arts, tgs, yts, pdf_rows, stocks):
 
     section("기사·리서치", [f"{a['ID']}|{a['분류힌트']}|{a['출처']}|{one_line(a['제목'], 90)}" for a in arts if a["후보"] == "Y"])
     section("텔레그램", [f"{t['ID']}|{t['분류힌트']}|{t['채널']}|{t['시각'][5:]}|{one_line(t['내용'], 260)}" for t in tgs if t["후보"] == "Y"])
-    section("유튜브(제목으로 고른 뒤 자막 파일에서 해당 영상만 읽을 것)", [f"{y['ID']}|{y['분류힌트']}|{y['채널']}|{one_line(y['제목'], 90)}|자막:{y.get('자막상태', '자막대기')}" for y in yts if y["후보"] == "Y"])
+    section("유튜브(제목 후보. '분석:완료' 영상은 엑셀 '유튜브' 시트의 영상분석 열에 Gemini 요약이 있음)", [f"{y['ID']}|{y['분류힌트']}|{y['채널']}|{one_line(y['제목'], 90)}|분석:{y.get('자막상태', '대기')}" for y in yts if y["후보"] == "Y"])
     section("PDF (정독대상=Y 만 'PDF정독본' 시트에 본문 있음)", [f"{p['ID']}|{p['유형']}|{p['채널']}|{p['파일명']}|{p['쪽수']}쪽|정독:{p['정독대상']}" for p in pdf_rows])
     if stocks:
         L.append("## 관심종목 전일 등락")
@@ -151,7 +151,7 @@ def write_workbook(path, window, log_lines, arts, tgs, yts, pdf_rows, pdf_body, 
         pd.DataFrame(arts, columns=a_cols).to_excel(w, sheet_name="기사_리서치", index=False)
         t_cols = ["ID", "후보", "점수", "분류힌트", "시각", "채널", "내용", "제외사유"]
         pd.DataFrame(tgs, columns=t_cols).to_excel(w, sheet_name="텔레그램", index=False)
-        y_cols = ["ID", "후보", "점수", "분류힌트", "채널", "제목", "게시일", "링크", "자막상태", "제외사유"]
+        y_cols = ["ID", "후보", "점수", "분류힌트", "채널", "제목", "게시일", "링크", "길이(분)", "자막상태", "영상분석", "제외사유"]
         pd.DataFrame(yts, columns=y_cols).to_excel(w, sheet_name="유튜브", index=False)
         p_cols = ["ID", "정독대상", "유형", "채널", "파일명", "쪽수", "점수", "분류힌트", "첫쪽미리보기", "제외사유"]
         pd.DataFrame(pdf_rows, columns=p_cols).to_excel(w, sheet_name="PDF목록", index=False)
@@ -241,10 +241,17 @@ def main():
         transcript_path = os.path.join(DOWNLOAD_DIR, f"{date_label}_유튜브_자막.xlsx")
         write_transcript_excel(yt_new, transcript_path)
     annotate(yt_new, ("제목",), tickers)
+    try:
+        from youtube_gemini import analyze
+        log.append(("유튜브 Gemini 분석", analyze(yt_new)))
+    except Exception as e:
+        log.append(("유튜브 Gemini 분석", f"실패: {type(e).__name__}: {str(e)[:80]}"))
+        traceback.print_exc()
     yts = []
     for n, v in enumerate(sorted(yt_new, key=lambda i: -i["점수"]), 1):
         yts.append({"ID": f"Y{n}", **{k: v.get(k, "") for k in ("후보", "점수", "분류힌트", "채널", "제목", "링크", "제외사유")},
-                    "게시일": fmt_date(v.get("게시일")), "자막상태": v.get("자막상태", "자막대기")})
+                    "게시일": fmt_date(v.get("게시일")), "자막상태": v.get("분석상태") or v.get("자막상태", "자막대기"),
+                    "영상분석": v.get("분석", ""), "길이(분)": round(v["길이초"] / 60) if v.get("길이초") else ""})
 
     # 3) 텔레그램 + PDF
     tgs, pdf_rows, pdf_body, pdf_paths, pdf_hash = [], [], [], [], {}
