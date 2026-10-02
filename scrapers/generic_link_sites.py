@@ -66,7 +66,8 @@ SITES = [
         "name": "순살브리핑",
         "list_url": "https://soonsal.com/newsletters/",
         "href_pattern": r"soonsal\.com/newsletters/\d{4}/\d+\.html",
-        "max_items": 14,   # 보관함 전체(수백 건)가 아니라 최신 호만
+        "max_items": 3,    # 하루 1호 발행 - 보관함 전체가 아니라 최신 호 몇 개만 (안전장치)
+        "date_regex": r"/newsletters/(\d{4})/(\d{2})(\d{2})\.html",   # 주소에 발행일이 있어 구간 필터에 사용
     },
     {
         "name": "삼성 KoAct 인사이트",
@@ -94,7 +95,12 @@ def _extract(html: str, site: dict) -> list[dict]:
         if link in seen:
             continue
         seen.add(link)
-        items.append({"출처": site["name"], "제목": title, "링크": link})
+        item = {"출처": site["name"], "제목": title, "링크": link}
+        if site.get("date_regex"):
+            m = re.search(site["date_regex"], link)
+            if m:
+                item["게시일"] = "-".join(m.groups())
+        items.append(item)
         if site.get("max_items") and len(items) >= site["max_items"]:
             break
     return items
