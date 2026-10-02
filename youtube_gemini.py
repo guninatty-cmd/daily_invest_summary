@@ -24,6 +24,13 @@ PROMPT = """이 유튜브 영상을 미국 주식 투자자 관점에서 한국�
 영상에 없는 내용은 만들지 말고, 확실하지 않으면 '불명'이라고 적어라."""
 
 
+def _retry_secs(msg):
+    m = re.search(r"retry in (?:(\d+)h)?(?:(\d+)m)?([\d.]+)s", msg)
+    if not m:
+        return None
+    return int(m.group(1) or 0) * 3600 + int(m.group(2) or 0) * 60 + float(m.group(3))
+
+
 def _models():
     env = os.environ.get("GEMINI_MODEL", "").strip()
     lst = [m.strip() for m in env.split(",") if m.strip()] if env else []
@@ -109,7 +116,7 @@ def analyze(videos: list[dict]) -> str:
     quota_hit = False
     t_start = time.time()
     for v in targets:
-        if quota_hit:
+        if quota_hit or not models:
             v["분석상태"] = "무료 한도 소진"
             continue
         if time.time() - t_start > MAX_RUN_SEC:
@@ -146,29 +153,32 @@ def analyze(videos: list[dict]) -> str:
                     last = f"{type(e).__name__}: {msg[:90]}"
                     print(f"[gemini] {v.get('video_id')} {m} {time.time() - t0:.0f}s 오류 {last}")
                     if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
-                        full = re.sub(r"\s+", " ", msg)
-                        print(f"[gemini] 429 상세: {full[:1500]}")
-                        mm = re.search(r"retry in ([\d.]+)s", msg) or re.search(r"retryDelay'?\"?: ?'?\"?([\d.]+)s", msg)
-                        delay = float(mm.group(1)) if mm else None
-                        per_day = "PerDay" in msg or "per day" in msg.lower()
-                        if (not per_day) and delay is not None and delay <= 90 and attempt < 2:
+                        print("[gemini] 429 상세: " + " ".join(msg.split())[:900])
+                        delay = _retry_secs(msg)
+                        if delay is not None and delay <= 90 and attempt < 2:    # 분당 한도: 잠깐 기다렸다 재시도
                             print(f"[gemini] 분당 한도로 판단, {delay + 2:.0f}초 대기 후 재시도")
                             time.sleep(delay + 2)
                             continue
-                        quota_hit = True
+                        # 모델별 일일 한도(무료 20회) 소진: 이 모델은 빼고 다음 모델로 넘어간다(모델마다 한도가 따로 있음)
+                        models = [x for x in models if x != m]
+                        print(f"[gemini] {m} 일일 한도 소진, 남은 모델: {models}")
+                        if not models:
+                            quota_hit = True
                         break
                     if "404" in msg or "NOT_FOUND" in msg:
                         models = [x for x in models if x != m] or models   # 없는 모델은 이후 건너뜀
                         break
                     if "503" in msg or "UNAVAILABLE" in msg:
-                        time.sleep(15 * (attempt + 1))
-                        continue
+                        if attempt < 1:               # 실패 요청도 일일 횟수에 포함되므로 1번만 재시도하고 다음 모델로
+                            time.sleep(15)
+                            continue
+                        break
                     time.sleep(2)
                     break
             if done or quota_hit:
                 break
         if not v["분석"]:
-            v["분석상태"] = f"실패: {last}"
+            v["분석상태"] = "무료 한도 소진" if quota_hit else f"실패: {last}"
             fail += 1
         time.sleep(1)
     return f"Gemini 분석 완료 {ok}건 / 실패 {fail}건 / 대상 {len(targets)}건 / 길이추정 {n_est}건 (모델: {','.join(models[:2])})"
