@@ -2,23 +2,43 @@ name: YT test
 on:
   workflow_dispatch:
 jobs:
-  gemini-test:
+  yt-gemini-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install google-genai requests
-      - name: Gemini analyze one video
+          cache: 'pip'
+      - run: pip install -r requirements.txt
+      - name: 유튜브 수집 + Gemini 분석 + 드라이브 업로드
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GAS_WEBHOOK_URL: ${{ secrets.GAS_WEBHOOK_URL }}
+          GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
         run: |
-          python - <<'PY'
+          python -u - <<'PY'
+          import os, pandas as pd
+          from common import get_window
+          from scrapers.youtube import scrape_youtube
+          from triage import annotate, load_watch_tickers
           from youtube_gemini import analyze
-          v = [{"video_id": "XoTewrPM5yg", "링크": "https://www.youtube.com/watch?v=XoTewrPM5yg", "후보": "Y", "점수": 5, "길이초": 600, "라이브": False}]
-          print(analyze(v))
-          print(v[0]["분석상태"])
-          print(v[0]["분석"][:1500])
+          from drive_upload import upload_to_drive_via_gas
+          w = get_window()
+          vids = scrape_youtube()
+          annotate(vids, ("제목",), load_watch_tickers())
+          print("수집", len(vids), "건 / 후보Y", sum(v.get("후보") == "Y" for v in vids))
+          print(analyze(vids))
+          rows = [{"채널": v["채널"], "제목": v["제목"], "후보": v.get("후보"), "점수": v.get("점수"),
+                   "길이(분)": round(v["길이초"] / 60) if v.get("길이초") else "", "라이브": v.get("라이브"),
+                   "분석상태": v.get("분석상태"), "영상분석": v.get("분석", ""), "링크": v["링크"]} for v in vids]
+          rows.sort(key=lambda r: (r["분석상태"] is None or not str(r["분석상태"]).startswith("완료"), -(r["점수"] or 0)))
+          os.makedirs("downloads", exist_ok=True)
+          date = f"{w[1]:%Y-%m-%d}"
+          path = f"downloads/{date}_유튜브_Gemini분석_테스트.xlsx"
+          pd.DataFrame(rows).to_excel(path, index=False)
+          for r in rows:
+              print(r["분석상태"], "|", r["후보"], "|", r["길이(분)"], "분 |", r["채널"], "|", r["제목"][:50])
+          print("업로드:", upload_to_drive_via_gas(path, f"{date}_주식리포트_모음"))
           PY
