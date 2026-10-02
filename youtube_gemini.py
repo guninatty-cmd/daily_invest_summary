@@ -70,7 +70,7 @@ def analyze(videos: list[dict]) -> str:
             v["분석상태"] = "google-genai 미설치"
         return f"Gemini 분석 실패: {e}"
 
-    client = genai.Client(api_key=key)
+    client = genai.Client(api_key=key, http_options=types.HttpOptions(timeout=240000))  # 요청당 4분 상한(무한 대기 방지)
     models = _models()
     ok = fail = 0
     quota_hit = False
@@ -80,6 +80,7 @@ def analyze(videos: list[dict]) -> str:
             continue
         last = ""
         for m in list(models):
+            t0 = time.time()
             try:
                 resp = client.models.generate_content(
                     model=m,
@@ -90,6 +91,7 @@ def analyze(videos: list[dict]) -> str:
                     config=types.GenerateContentConfig(
                         media_resolution="MEDIA_RESOLUTION_LOW", temperature=0.2),
                 )
+                print(f"[gemini] {v.get('video_id')} {m} {time.time() - t0:.0f}s 응답")
                 txt = (resp.text or "").strip()
                 if txt:
                     v["분석"], v["분석상태"] = txt, f"완료({m})"
@@ -100,6 +102,7 @@ def analyze(videos: list[dict]) -> str:
             except Exception as e:
                 msg = str(e)
                 last = f"{type(e).__name__}: {msg[:90]}"
+                print(f"[gemini] {v.get('video_id')} {m} {time.time() - t0:.0f}s 오류 {last}")
                 if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
                     quota_hit = True
                     break
