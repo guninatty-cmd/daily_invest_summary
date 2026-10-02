@@ -1,17 +1,24 @@
 name: YT test
-on: workflow_dispatch
+on:
+  workflow_dispatch:
 jobs:
-  t:
+  gemini-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-      - run: pip install -U yt-dlp youtube-transcript-api
-      - name: yt-dlp subtitle test
+          python-version: '3.11'
+      - run: pip install google-genai requests
+      - name: Gemini analyze one video
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          yt-dlp --skip-download --write-auto-subs --sub-langs "ko.*" -o "t_%(id)s" "https://www.youtube.com/watch?v=XoTewrPM5yg" 2>&1 | tail -12 || true
-          ls
-      - name: transcript api test
-        run: |
-          python -c "from youtube_transcript_api import YouTubeTranscriptApi as Y; print(len(Y().fetch('XoTewrPM5yg',languages=['ko']).to_raw_data()))" 2>&1 | tail -4 || true
+          python - <<'PY'
+          from youtube_gemini import analyze
+          v = [{"video_id": "XoTewrPM5yg", "링크": "https://www.youtube.com/watch?v=XoTewrPM5yg", "후보": "Y", "점수": 5, "길이초": 600, "라이브": False}]
+          print(analyze(v))
+          print(v[0]["분석상태"])
+          print(v[0]["분석"][:1500])
+          PY
