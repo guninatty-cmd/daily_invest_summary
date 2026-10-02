@@ -27,7 +27,7 @@ concurrency:
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     permissions:
       contents: write   # state/ 및 processed_pdf_hashes.txt 커밋용
 
