@@ -37,7 +37,7 @@ CHANNELS = [  # (채널명, 채널ID)
     ("RISE ETF", "UCZ9jozYXT6BXl2TchjNH8hw"),
     ("깨비증권 마블TV[KB증권]", "UCD0k4Kq7SJROxxV-9N5v8IA"),
     ("매경 자이앤트", "UCPTy0BNqiv-0SdAvFgrXvXg"),
-    ("기릿의 주식노트", "UCw8pcmyPWGSik7bjJpeInlA"),
+    ("기릿의 주식노트", "UCw8pcmyPWGSik7bjJpeINlA"),
     ("미국회계사 EK", "UCxUzt4AIpI1XO9cxHQ-ro1w"),
 ]
 
