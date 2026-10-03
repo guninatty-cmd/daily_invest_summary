@@ -141,6 +141,33 @@ def write_candidate_txt(path, window, arts, tgs, yts, pdf_rows, stocks):
     Path(path).write_text("\n".join(L), encoding="utf-8")
 
 
+def write_candidate_bodies(path, window, tgs, yts, pdf_body, max_chars=70000):
+    """Claude가 엑셀 전체를 읽지 않도록, 후보의 '읽을 본문'만 모은 압축 파일."""
+    start, end = window
+    L = [f"# 후보본문 | 수집구간 {start:%m/%d %H:%M} ~ {end:%m/%d %H:%M} KST",
+         "# 후보목록(00)에서 고른 항목의 본문. 이 파일로 충분하면 엑셀을 열지 않는다.", ""]
+
+    def top(rows, n):
+        return sorted([r for r in rows if r.get("후보") == "Y"], key=lambda r: -float(r.get("점수") or 0))[:n]
+
+    L.append("## 텔레그램 후보 본문 (점수 상위)")
+    for t in top(tgs, 40):
+        L.append(f"[{t['ID']}] {t['채널']} | {one_line(t['내용'], 700)}")
+    L.append("")
+    L.append("## 유튜브 영상분석 (분석 완료 후보만)")
+    for y in top(yts, 30):
+        if y.get("영상분석"):
+            L.append(f"[{y['ID']}] {y['채널']} | {one_line(y['제목'], 90)}")
+            L.append(one_line(y["영상분석"], 1800))
+    L.append("")
+    L.append("## PDF 정독본 발췌 (상위 10건)")
+    for p in (pdf_body or [])[:10]:
+        L.append(f"[{p['유형']}] {p['파일명']}")
+        L.append(one_line(p["본문"], 1800))
+    text = "\n".join(L)
+    Path(path).write_text(text[:max_chars], encoding="utf-8")
+
+
 def write_workbook(path, window, log_lines, arts, tgs, yts, pdf_rows, pdf_body, stocks):
     with pd.ExcelWriter(path, engine="openpyxl") as w:
         info = [["수집 구간(KST)", f"{window[0]:%Y-%m-%d %H:%M} ~ {window[1]:%Y-%m-%d %H:%M}"],
@@ -291,6 +318,8 @@ def main():
     txt_path = os.path.join(DOWNLOAD_DIR, "00_후보목록.txt")
     write_workbook(excel_path, window, log, arts, tgs, yts, pdf_rows, pdf_body, stocks)
     write_candidate_txt(txt_path, window, arts, tgs, yts, pdf_rows, stocks)
+    bodies_path = os.path.join(DOWNLOAD_DIR, "01_후보본문.txt")
+    write_candidate_bodies(bodies_path, window, tgs, yts, pdf_body)
     cand = lambda rows: sum(r.get("후보") == "Y" for r in rows)
     print(f"\n📊 기사 {len(arts)}(후보 {cand(arts)}) | 텔레그램 {len(tgs)}(후보 {cand(tgs)}) | "
           f"유튜브 {len(yts)} | PDF {len(pdf_rows)}")
@@ -303,7 +332,7 @@ def main():
 
     # 6) 드라이브 업로드 - 하나라도 실패하면 실행 자체를 '실패'로 표시한다 (조용한 성공 방지)
     from drive_upload import upload_to_drive_via_gas
-    targets = [txt_path, excel_path] + ([transcript_path] if transcript_path else []) + pdf_paths
+    targets = [txt_path, bodies_path, excel_path] + ([transcript_path] if transcript_path else []) + pdf_paths
     failed, ok_pdf_hashes = [], set()
     for p in targets:
         if upload_to_drive_via_gas(p, folder_name):
