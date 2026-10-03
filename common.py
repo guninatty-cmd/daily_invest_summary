@@ -3,10 +3,10 @@
 
 [수집 구간 규칙] 모든 수집기가 이 하나의 구간을 공유한다 (예전엔 텔레그램 19시~19시,
 유튜브 21시~21시, 뉴스는 '어제 날짜'로 제각각이었음).
-  구간 = (직전 07:00 KST) ~ (그 24시간 전 07:00 KST)
-  - 평일 07:00에 실행되면: 어제 07:00 ~ 오늘 07:00
-  - 늦게 지연 실행되거나 수동 실행해도 같은 구간 (기준은 '실행 시각 이전의 가장 최근 07:00')
-  - 재실행/과거 날짜 재수집: 환경변수 WINDOW_END="2026-10-02 07:00" 로 고정 가능
+  구간 = (직전 08:00 KST) ~ (그 24시간 전 08:00 KST)
+  - 평일 08:00에 실행되면: 어제 08:00 ~ 오늘 08:00
+  - 늦게 지연 실행되거나 수동 실행해도 같은 구간 (기준은 '실행 시각 이전의 가장 최근 08:00')
+  - 재실행/과거 날짜 재수집: 환경변수 WINDOW_END="2026-10-02 08:00" 로 고정 가능
 """
 import os
 import re
@@ -16,11 +16,11 @@ from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 from dateutil import parser as dateparser
 
 KST = timezone(timedelta(hours=9))
-RUN_HOUR_KST = 7
+RUN_HOUR_KST = 8
 
 
 def get_window(now: datetime | None = None) -> tuple[datetime, datetime]:
-    """(start, end) KST aware datetime. end = 실행 시각 이전의 가장 최근 07:00."""
+    """(start, end) KST aware datetime. end = 실행 시각 이전의 가장 최근 08:00."""
     override = os.environ.get("WINDOW_END", "").strip()
     if override:
         end = dateparser.parse(override).replace(tzinfo=KST, minute=0, second=0, microsecond=0)
