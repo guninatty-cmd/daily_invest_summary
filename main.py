@@ -168,23 +168,33 @@ def write_candidate_bodies(path, window, tgs, yts, pdf_body, max_chars=70000):
     Path(path).write_text(text[:max_chars], encoding="utf-8")
 
 
+def _df(*args, **kwargs):
+    """엑셀 저장 시 IllegalCharacterError(PDF 본문의 NUL 등 제어문자)를 막기 위해 문자열을 정리한다."""
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+    df = pd.DataFrame(*args, **kwargs)
+    for c in df.columns:
+        if df[c].dtype == object:
+            df[c] = df[c].map(lambda v: ILLEGAL_CHARACTERS_RE.sub("", v) if isinstance(v, str) else v)
+    return df
+
+
 def write_workbook(path, window, log_lines, arts, tgs, yts, pdf_rows, pdf_body, stocks):
     with pd.ExcelWriter(path, engine="openpyxl") as w:
         info = [["수집 구간(KST)", f"{window[0]:%Y-%m-%d %H:%M} ~ {window[1]:%Y-%m-%d %H:%M}"],
                 ["읽는 법", "후보=Y 이고 점수 높은 행만 읽는다. 후보=N 은 제외사유 확인용(읽지 않는다)."],
                 ["분류힌트", "규칙 기반 힌트일 뿐이며 최종 분류는 리포트 작성 시 확정"], ["", ""]] + [[k, v] for k, v in log_lines]
-        pd.DataFrame(info, columns=["항목", "내용"]).to_excel(w, sheet_name="00_안내", index=False)
+        _df(info, columns=["항목", "내용"]).to_excel(w, sheet_name="00_안내", index=False)
         a_cols = ["ID", "후보", "점수", "분류힌트", "구분", "출처", "제목", "게시일", "링크", "제외사유"]
-        pd.DataFrame(arts, columns=a_cols).to_excel(w, sheet_name="기사_리서치", index=False)
+        _df(arts, columns=a_cols).to_excel(w, sheet_name="기사_리서치", index=False)
         t_cols = ["ID", "후보", "점수", "분류힌트", "시각", "채널", "내용", "제외사유"]
-        pd.DataFrame(tgs, columns=t_cols).to_excel(w, sheet_name="텔레그램", index=False)
+        _df(tgs, columns=t_cols).to_excel(w, sheet_name="텔레그램", index=False)
         y_cols = ["ID", "후보", "점수", "분류힌트", "채널", "제목", "게시일", "링크", "길이(분)", "자막상태", "영상분석", "제외사유"]
-        pd.DataFrame(yts, columns=y_cols).to_excel(w, sheet_name="유튜브", index=False)
+        _df(yts, columns=y_cols).to_excel(w, sheet_name="유튜브", index=False)
         p_cols = ["ID", "정독대상", "유형", "채널", "파일명", "쪽수", "점수", "분류힌트", "첫쪽미리보기", "제외사유"]
-        pd.DataFrame(pdf_rows, columns=p_cols).to_excel(w, sheet_name="PDF목록", index=False)
-        pd.DataFrame(pdf_body, columns=["파일명", "유형", "분할", "본문"]).to_excel(w, sheet_name="PDF정독본", index=False)
+        _df(pdf_rows, columns=p_cols).to_excel(w, sheet_name="PDF목록", index=False)
+        _df(pdf_body, columns=["파일명", "유형", "분할", "본문"]).to_excel(w, sheet_name="PDF정독본", index=False)
         if stocks:
-            pd.DataFrame([{"티커": s["ticker"], "날짜": s["date"], "종가($)": s["close"], "전일종가($)": s["prev_close"],
+            _df([{"티커": s["ticker"], "날짜": s["date"], "종가($)": s["close"], "전일종가($)": s["prev_close"],
                            "등락률(%)": s["change_pct"], "±3%이상": "⚠" if s["alert"] else ""} for s in stocks]
                          ).to_excel(w, sheet_name="주가", index=False)
 
