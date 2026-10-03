@@ -41,3 +41,17 @@ DLTR
 NEE
 PWR
 ACN
+# 지수·금리·유가 및 리포트 언급 종목 (종가 수집용)
+^GSPC
+^IXIC
+^DJI
+^SOX
+^TNX
+CL=F
+TSLA
+AMD
+WDC
+STX
+SNDK
+MDB
+JBL
