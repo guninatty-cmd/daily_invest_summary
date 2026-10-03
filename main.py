@@ -173,8 +173,7 @@ def _df(*args, **kwargs):
     from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
     df = pd.DataFrame(*args, **kwargs)
     for c in df.columns:
-        if df[c].dtype == object:
-            df[c] = df[c].map(lambda v: ILLEGAL_CHARACTERS_RE.sub("", v) if isinstance(v, str) else v)
+        df[c] = df[c].map(lambda v: ILLEGAL_CHARACTERS_RE.sub("", v) if isinstance(v, str) else v)
     return df
 
 
