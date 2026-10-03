@@ -13,7 +13,7 @@ MAX_SEC = 3600            # 영상 1개 상한 (1시간)
 MAX_TOTAL_SEC = 7 * 3600  # 하루 합계 상한 (무료 한도 8시간 안쪽)
 MAX_VIDEOS = 12
 TOKENS_PER_SEC = 107      # count_tokens 실측 보정(실제 길이 대비 약 107토큰/초). 길이 추정용
-MAX_RUN_SEC = 15 * 60     # 분석 전체 시간 상한(파이프라인 지연 방지)
+MAX_RUN_SEC = 30 * 60     # 분석 전체 시간 상한(파이프라인 지연 방지)
 DEFAULT_MODELS = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"]
 
 PROMPT = """이 유튜브 영상을 미국 주식 투자자 관점에서 한국어로 요약해라. 광고/인사/잡담은 빼고 아래 형식만 출력.
@@ -97,7 +97,7 @@ def analyze(videos: list[dict]) -> str:
             v["분석"], v["분석상태"] = "", "google-genai 미설치"
         return f"Gemini 분석 실패: {e}"
 
-    client = genai.Client(api_key=key, http_options=types.HttpOptions(timeout=240000))  # 요청당 4분 상한(무한 대기 방지)
+    client = genai.Client(api_key=key, http_options=types.HttpOptions(timeout=150000))  # 요청당 4분 상한(무한 대기 방지)
     models = _models()
     n_est = 0
     for v in videos:       # 길이를 모르는 후보 영상은 토큰 수로 길이 추정
@@ -123,7 +123,11 @@ def analyze(videos: list[dict]) -> str:
             v["분석상태"] = "분석 시간 상한으로 건너뜀"
             continue
         last = ""
+        tried = 0
         for m in list(models):
+            if tried >= 2:        # 과부하/지연 시 한 영상에 모델 2개까지만 시도(전체 시간 보호)
+                break
+            tried += 1
             done = False
             for attempt in range(3):          # 503(과부하)는 같은 모델로 최대 3번 재시도
                 t0 = time.time()
