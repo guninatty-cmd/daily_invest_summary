@@ -29,7 +29,7 @@ def get_window(now: datetime | None = None) -> tuple[datetime, datetime]:
         end = now.replace(hour=RUN_HOUR_KST, minute=0, second=0, microsecond=0)
         if now < end:
             end -= timedelta(days=1)
-    return end - timedelta(days=1), end
+    return end - (timedelta(days=2) if end.weekday() == 0 else timedelta(days=1)), end  # 월요일: 토 08:00~월 08:00 (주말 48h)
 
 
 def parse_dt(raw) -> datetime | None:
