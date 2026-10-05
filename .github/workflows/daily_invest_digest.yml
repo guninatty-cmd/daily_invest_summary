@@ -8,7 +8,7 @@ on:
   schedule:
     # UTC 23:00 = KST 08:00.  월~금(UTC) 23:00 = KST 화~토 08:00 (키움 US Daily 07:25 게시분 포함 위해 08:00 마감)
     # (미국장은 월~금에 열려서 한국시간 화~토 아침에 결과가 나옴. 월~금 아침으로 바꾸려면 '0 22 * * 0-4')
-    - cron: '0 23 * * 1-5'
+    - cron: '0 23 * * 0-5'
   workflow_dispatch:
     inputs:
       force_run:
