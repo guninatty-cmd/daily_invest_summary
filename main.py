@@ -279,7 +279,7 @@ def main():
     annotate(yt_new, ("제목",), tickers)
     try:
         from youtube_gemini import analyze
-        log.append(("유튜브 Gemini 분석", analyze(yt_new)))
+        _r = {}; _t = __import__("threading").Thread(target=lambda: _r.update(r=analyze(yt_new)), daemon=True); _t.start(); _t.join(int(os.environ.get("GEMINI_BUDGET_SEC", "900"))); log.append(("유튜브 Gemini 분석", _r.get("r", "시간초과 또는 오류로 건너뜀")))
     except Exception as e:
         log.append(("유튜브 Gemini 분석", f"실패: {type(e).__name__}: {str(e)[:80]}"))
         traceback.print_exc()
