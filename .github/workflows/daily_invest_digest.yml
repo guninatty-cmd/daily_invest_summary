@@ -54,7 +54,7 @@ jobs:
           WINDOW_END: ${{ github.event.inputs.window_end }}
           # 자막 추출은 클라우드 IP가 차단되는 경우가 많아 기본 꺼짐. PC에서 `python main.py --youtube-only` 로 처리.
           ACTIONS_TRANSCRIPTS: '0'
-        run: python main.py
+        run: python -u main.py
 
       - name: Commit state (이미 처리한 항목/PDF 기록)
         if: always()
