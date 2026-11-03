@@ -293,7 +293,7 @@ def main():
     tgs, pdf_rows, pdf_body, pdf_paths, pdf_hash = [], [], [], [], {}
     known = load_hashes()
     try:
-        msgs, pdf_raw = asyncio.run(run_telegram_digest(DOWNLOAD_DIR))
+        msgs, pdf_raw = asyncio.run(asyncio.wait_for(run_telegram_digest(DOWNLOAD_DIR), int(os.environ.get("TELEGRAM_BUDGET_SEC", "900"))))
         pdf_paths, pdf_hash = filter_new_pdfs(pdf_raw, known)
         log.append(("텔레그램", f"OK 메시지 {len(msgs)}건 / 새 PDF {len(pdf_paths)}건 (이미 처리한 PDF {len(pdf_raw) - len(pdf_paths)}건 제외)"))
     except Exception as e:
