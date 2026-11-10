@@ -58,6 +58,44 @@ def load_hashes() -> set[str]:
     return set(l.strip() for l in p.read_text(encoding="utf-8").splitlines() if l.strip()) if p.exists() else set()
 
 
+PDF_SIM_THRESHOLD = float(os.environ.get("PDF_SIM_THRESHOLD", "0.8"))  # 파일명 유사도 기준 (0.8 = 80%)
+_WRAP_RE = re.compile(r"^\[[^\]]*\]\s*\d{4}\s*년\s*\d{1,2}\s*월\s*\d{1,2}\s*일")
+
+
+def _pdf_title_key(path: str) -> str:
+    """유사도 비교용 정규화 제목: 채널명 [..]·확장자·날짜·기호 제거, 소문자."""
+    import re as _re
+    name = os.path.splitext(os.path.basename(path))[0]
+    name = _re.sub(r"^\[[^\]]*\]\s*", "", name)
+    name = _re.sub(r"\d{4}[-./]?\d{2}[-./]?\d{2}|\d{6,8}|_\d+$|\(\d+\)$", "", name)
+    return _re.sub(r"[^0-9a-zA-Z가-힣]", "", name).lower()
+
+
+def dedupe_similar_pdfs(paths: list[str], threshold: float = PDF_SIM_THRESHOLD):
+    """제목이 threshold 이상 비슷한 PDF는 용량이 큰 1개만 남기고 나머지는 삭제. 반환: (남은 경로, 제거 목록)"""
+    from difflib import SequenceMatcher
+    keep, dropped = [], []
+    for p in sorted(paths, key=lambda x: -os.path.getsize(x) if os.path.exists(x) else 0):
+        key = _pdf_title_key(p)
+        is_wrap = bool(_WRAP_RE.match(os.path.basename(p)))
+        dup_of = None
+        if key and not is_wrap:
+            for q in keep:
+                kq = _pdf_title_key(q)
+                if kq and not _WRAP_RE.match(os.path.basename(q)) and SequenceMatcher(None, key, kq).ratio() >= threshold:
+                    dup_of = q
+                    break
+        if dup_of:
+            dropped.append((os.path.basename(p), os.path.basename(dup_of)))
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        else:
+            keep.append(p)
+    return keep, dropped
+
+
 def filter_new_pdfs(paths: list[str], known: set[str]):
     new_paths, path_hash = [], {}
     for p in paths:
@@ -69,7 +107,11 @@ def filter_new_pdfs(paths: list[str], known: set[str]):
         else:
             new_paths.append(p)
             path_hash[p] = h
-    return new_paths, path_hash
+    kept, dropped = dedupe_similar_pdfs(new_paths)
+    for name, kept_name in dropped:
+        print(f"   🗑️ 유사 PDF 제거(제목 {PDF_SIM_THRESHOLD:.0%}+ 중복): {name}  ≈  {kept_name}")
+    filter_new_pdfs.last_dropped = dropped
+    return kept, {p: path_hash[p] for p in kept}
 
 
 SITE_SCRAPERS_ON = os.environ.get("SITE_SCRAPERS") == "1"   # 증권사·ETF 등 독립 사이트 수집기 (기본 꺼짐: Claude Code가 담당)
@@ -307,7 +349,8 @@ def main():
     try:
         msgs, pdf_raw = asyncio.run(asyncio.wait_for(run_telegram_digest(DOWNLOAD_DIR), int(os.environ.get("TELEGRAM_BUDGET_SEC", "900"))))
         pdf_paths, pdf_hash = filter_new_pdfs(pdf_raw, known)
-        log.append(("텔레그램", f"OK 메시지 {len(msgs)}건 / 새 PDF {len(pdf_paths)}건 (이미 처리한 PDF {len(pdf_raw) - len(pdf_paths)}건 제외)"))
+        _dd = len(getattr(filter_new_pdfs, "last_dropped", []))
+        log.append(("텔레그램", f"OK 메시지 {len(msgs)}건 / 새 PDF {len(pdf_paths)}건 (이미 처리한 PDF {len(pdf_raw) - len(pdf_paths) - _dd}건, 제목 유사 중복 {_dd}건 제외)"))
     except Exception as e:
         msgs = []
         log.append(("텔레그램", f"실패: {type(e).__name__}: {str(e)[:80]}"))
@@ -328,8 +371,12 @@ def main():
 
     # 4) 주가
     try:
-        stocks = collect_stock_prices()
-        log.append(("주가", f"OK {len(stocks)}종목"))
+        if os.environ.get("STOCKS_ON") == "1":
+            stocks = collect_stock_prices()
+            log.append(("주가", f"OK {len(stocks)}종목"))
+        else:
+            stocks = []
+            log.append(("주가", "꺼짐(STOCKS_ON=1 로 켬)"))
     except Exception as e:
         stocks = []
         log.append(("주가", f"실패: {e}"))
