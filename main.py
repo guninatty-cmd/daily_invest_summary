@@ -347,7 +347,13 @@ def main():
     tgs, pdf_rows, pdf_body, pdf_paths, pdf_hash = [], [], [], [], {}
     known = load_hashes()
     try:
-        msgs, pdf_raw = asyncio.run(asyncio.wait_for(run_telegram_digest(DOWNLOAD_DIR), int(os.environ.get("TELEGRAM_BUDGET_SEC", "900"))))
+        msgs, pdf_raw = [], []
+        try:
+            asyncio.run(asyncio.wait_for(run_telegram_digest(DOWNLOAD_DIR, msgs, pdf_raw), int(os.environ.get("TELEGRAM_BUDGET_SEC", "1200"))))
+        except asyncio.TimeoutError:   # 시간 초과여도 그때까지 모은 메시지·PDF는 버리지 않는다 (2026-11-10 전부 0건이 된 원인)
+            print(f"⚠️ 텔레그램 시간 초과 - 부분 결과 사용: 메시지 {len(msgs)}건, PDF {len(pdf_raw)}건")
+            msgs.reverse()
+            log.append(("텔레그램 시간 초과", f"부분 수집 메시지 {len(msgs)}건 / PDF {len(pdf_raw)}건"))
         pdf_paths, pdf_hash = filter_new_pdfs(pdf_raw, known)
         _dd = len(getattr(filter_new_pdfs, "last_dropped", []))
         log.append(("텔레그램", f"OK 메시지 {len(msgs)}건 / 새 PDF {len(pdf_paths)}건 (이미 처리한 PDF {len(pdf_raw) - len(pdf_paths) - _dd}건, 제목 유사 중복 {_dd}건 제외)"))
@@ -419,7 +425,9 @@ def main():
         last_run.write_text(date_label)
     if failed:
         print(f"\n❌ 업로드 실패 {len(failed)}건: {failed}")
-        sys.exit(1)
+        if not core_ok:   # 핵심 파일(후보목록·엑셀) 실패만 '실행 실패'. PDF 몇 개 실패는 해시를 기록하지 않아 다음 실행이 다시 올린다.
+            sys.exit(1)
+        print("⚠️ 핵심 파일은 업로드됨 - 실패한 PDF는 다음 실행에서 재시도")
     print(f"\n✅ 완료: {folder_name}")
 
 

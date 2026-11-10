@@ -12,14 +12,17 @@ from common import KST, get_window
 from drive_upload import sanitize_filename
 
 
-async def run_telegram_digest(download_dir: str = "downloads"):
-    """반환: (messages: list[dict], pdf_paths: list[str])"""
+async def run_telegram_digest(download_dir: str = "downloads", messages=None, pdf_paths=None):
+    """반환: (messages: list[dict], pdf_paths: list[str])
+    messages/pdf_paths 리스트를 밖에서 넘기면 거기에 계속 쌓는다 -> 전체 시간 초과로 취소돼도 그때까지 모은 것을 쓸 수 있다."""
     start, end = get_window()
     api_id = int(os.environ['TELEGRAM_API_ID'])
     api_hash = os.environ['TELEGRAM_API_HASH']
     session = os.environ['TELEGRAM_SESSION_STRING']
 
-    messages, pdf_paths, seen_hashes = [], [], set()
+    messages = [] if messages is None else messages
+    pdf_paths = [] if pdf_paths is None else pdf_paths
+    seen_hashes = set()
     os.makedirs(download_dir, exist_ok=True)
 
     client = TelegramClient(StringSession(session), api_id, api_hash)
@@ -44,7 +47,7 @@ async def run_telegram_digest(download_dir: str = "downloads"):
                     name = message.file.name or 'document.pdf'
                     filepath = os.path.join(download_dir, f"[{clean_chat}] {sanitize_filename(name)}")
                     try:
-                        await message.download_media(file=filepath)
+                        await asyncio.wait_for(message.download_media(file=filepath), timeout=int(os.environ.get('PDF_DL_TIMEOUT_SEC', '90')))
                         with open(filepath, 'rb') as fh:
                             h = hashlib.sha256(fh.read()).hexdigest()
                         if h in seen_hashes:      # 여러 채널에 재전달된 동일 PDF
