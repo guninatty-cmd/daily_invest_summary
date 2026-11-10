@@ -72,26 +72,31 @@ def filter_new_pdfs(paths: list[str], known: set[str]):
     return new_paths, path_hash
 
 
+SITE_SCRAPERS_ON = os.environ.get("SITE_SCRAPERS") == "1"   # 증권사·ETF 등 독립 사이트 수집기 (기본 꺼짐: Claude Code가 담당)
+YOUTUBE_ON = os.environ.get("YOUTUBE_ON") == "1"            # 유튜브 목록+Gemini 분석 (기본 꺼짐)
+
+
 def collect_sources() -> tuple[list[dict], dict]:
-    """기사/리서치 계열 수집기를 모두 실행. 실패해도 나머지는 계속. 반환: (items, 수집기별 상태)"""
-    from scrapers.hankyung_consensus import scrape_hankyung_consensus
-    from scrapers.generic_link_sites import scrape_generic_sites
-    from scrapers.sol_etf import scrape_sol_etf
-    from scrapers.kiwoom import scrape_kiwoom
-    from scrapers.kodex_time_tiger import scrape_kodex, scrape_time_etf, scrape_tiger_etf
-    from scrapers.ace_etf import scrape_ace_etf
-    from scrapers.myasset import scrape_myasset
-    from scrapers.hanaw import scrape_hanaw
-    from scrapers.miraeasset import scrape_miraeasset
+    """기사 수집. 기본은 네이버 뉴스(원문 링크 변환)만. 독립 사이트는 SITE_SCRAPERS=1 일 때만. 실패해도 나머지는 계속."""
     from scrapers.naver_news import scrape_naver_news
 
-    scrapers = [
-        ("한경 컨센서스", scrape_hankyung_consensus), ("직링크 11개 사이트", scrape_generic_sites),
-        ("SOL ETF", scrape_sol_etf), ("키움증권", scrape_kiwoom), ("KODEX", scrape_kodex),
-        ("TIME ETF", scrape_time_etf), ("TIGER ETF", scrape_tiger_etf), ("ACE ETF", scrape_ace_etf),
-        ("유안타증권", scrape_myasset), ("하나증권", scrape_hanaw), ("미래에셋증권", scrape_miraeasset),
-        ("네이버 뉴스(6개 언론사+속보)", scrape_naver_news),
-    ]
+    scrapers = [("네이버 뉴스(6개 언론사+속보)", scrape_naver_news)]
+    if SITE_SCRAPERS_ON:
+        from scrapers.hankyung_consensus import scrape_hankyung_consensus
+        from scrapers.generic_link_sites import scrape_generic_sites
+        from scrapers.sol_etf import scrape_sol_etf
+        from scrapers.kiwoom import scrape_kiwoom
+        from scrapers.kodex_time_tiger import scrape_kodex, scrape_time_etf, scrape_tiger_etf
+        from scrapers.ace_etf import scrape_ace_etf
+        from scrapers.myasset import scrape_myasset
+        from scrapers.hanaw import scrape_hanaw
+        from scrapers.miraeasset import scrape_miraeasset
+        scrapers += [
+            ("한경 컨센서스", scrape_hankyung_consensus), ("직링크 11개 사이트", scrape_generic_sites),
+            ("SOL ETF", scrape_sol_etf), ("키움증권", scrape_kiwoom), ("KODEX", scrape_kodex),
+            ("TIME ETF", scrape_time_etf), ("TIGER ETF", scrape_tiger_etf), ("ACE ETF", scrape_ace_etf),
+            ("유안타증권", scrape_myasset), ("하나증권", scrape_hanaw), ("미래에셋증권", scrape_miraeasset),
+        ]
     items, status = [], {}
     for label, fn in scrapers:
         try:
@@ -224,7 +229,6 @@ def main():
     if "--youtube-only" in args:
         return run_youtube_only(upload)
 
-    from scrapers.youtube import scrape_youtube
     from stock_prices import collect_stock_prices
     from telegram_digest import run_telegram_digest
     from pdf_triage import triage_pdfs
@@ -263,8 +267,13 @@ def main():
 
     # 2) 유튜브 (제목/링크 + 선택적 자막)
     try:
-        videos = scrape_youtube()
-        log.append(("유튜브 목록", f"OK {len(videos)}건"))
+        if YOUTUBE_ON:
+            from scrapers.youtube import scrape_youtube
+            videos = scrape_youtube()
+            log.append(("유튜브 목록", f"OK {len(videos)}건"))
+        else:
+            videos = []
+            log.append(("유튜브 목록", "꺼짐(YOUTUBE_ON=1 로 켬) - Claude Code가 담당"))
     except Exception as e:
         videos = []
         log.append(("유튜브 목록", f"실패: {e}"))
@@ -278,8 +287,11 @@ def main():
         write_transcript_excel(yt_new, transcript_path)
     annotate(yt_new, ("제목",), tickers)
     try:
-        from youtube_gemini import analyze
-        _r = {}; _t = __import__("threading").Thread(target=lambda: _r.update(r=analyze(yt_new)), daemon=True); _t.start(); _t.join(int(os.environ.get("GEMINI_BUDGET_SEC", "900"))); log.append(("유튜브 Gemini 분석", _r.get("r", "시간초과 또는 오류로 건너뜀")))
+        if yt_new:
+            from youtube_gemini import analyze
+            _r = {}; _t = __import__("threading").Thread(target=lambda: _r.update(r=analyze(yt_new)), daemon=True); _t.start(); _t.join(int(os.environ.get("GEMINI_BUDGET_SEC", "900"))); log.append(("유튜브 Gemini 분석", _r.get("r", "시간초과 또는 오류로 건너뜀")))
+        else:
+            log.append(("유튜브 Gemini 분석", "대상 없음(건너뜀)"))
     except Exception as e:
         log.append(("유튜브 Gemini 분석", f"실패: {type(e).__name__}: {str(e)[:80]}"))
         traceback.print_exc()
