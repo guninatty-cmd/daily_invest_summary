@@ -58,6 +58,44 @@ def load_hashes() -> set[str]:
     return set(l.strip() for l in p.read_text(encoding="utf-8").splitlines() if l.strip()) if p.exists() else set()
 
 
+PDF_SIM_THRESHOLD = float(os.environ.get("PDF_SIM_THRESHOLD", "0.8"))  # 파일명 유사도 기준 (0.8 = 80%)
+_WRAP_RE = re.compile(r"^\[[^\]]*\]\s*\d{4}\s*년\s*\d{1,2}\s*월\s*\d{1,2}\s*일")
+
+
+def _pdf_title_key(path: str) -> str:
+    """유사도 비교용 정규화 제목: 채널명 [..]·확장자·날짜·기호 제거, 소문자."""
+    import re as _re
+    name = os.path.splitext(os.path.basename(path))[0]
+    name = _re.sub(r"^\[[^\]]*\]\s*", "", name)
+    name = _re.sub(r"\d{4}[-./]?\d{2}[-./]?\d{2}|\d{6,8}|_\d+$|\(\d+\)$", "", name)
+    return _re.sub(r"[^0-9a-zA-Z가-힣]", "", name).lower()
+
+
+def dedupe_similar_pdfs(paths: list[str], threshold: float = PDF_SIM_THRESHOLD):
+    """제목이 threshold 이상 비슷한 PDF는 용량이 큰 1개만 남기고 나머지는 삭제. 반환: (남은 경로, 제거 목록)"""
+    from difflib import SequenceMatcher
+    keep, dropped = [], []
+    for p in sorted(paths, key=lambda x: -os.path.getsize(x) if os.path.exists(x) else 0):
+        key = _pdf_title_key(p)
+        is_wrap = bool(_WRAP_RE.match(os.path.basename(p)))
+        dup_of = None
+        if key and not is_wrap:
+            for q in keep:
+                kq = _pdf_title_key(q)
+                if kq and not _WRAP_RE.match(os.path.basename(q)) and SequenceMatcher(None, key, kq).ratio() >= threshold:
+                    dup_of = q
+                    break
+        if dup_of:
+            dropped.append((os.path.basename(p), os.path.basename(dup_of)))
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        else:
+            keep.append(p)
+    return keep, dropped
+
+
 def filter_new_pdfs(paths: list[str], known: set[str]):
     new_paths, path_hash = [], {}
     for p in paths:
@@ -69,29 +107,38 @@ def filter_new_pdfs(paths: list[str], known: set[str]):
         else:
             new_paths.append(p)
             path_hash[p] = h
-    return new_paths, path_hash
+    kept, dropped = dedupe_similar_pdfs(new_paths)
+    for name, kept_name in dropped:
+        print(f"   🗑️ 유사 PDF 제거(제목 {PDF_SIM_THRESHOLD:.0%}+ 중복): {name}  ≈  {kept_name}")
+    filter_new_pdfs.last_dropped = dropped
+    return kept, {p: path_hash[p] for p in kept}
+
+
+SITE_SCRAPERS_ON = os.environ.get("SITE_SCRAPERS") == "1"   # 증권사·ETF 등 독립 사이트 수집기 (기본 꺼짐: Claude Code가 담당)
+YOUTUBE_ON = os.environ.get("YOUTUBE_ON") == "1"            # 유튜브 목록+Gemini 분석 (기본 꺼짐)
 
 
 def collect_sources() -> tuple[list[dict], dict]:
-    """기사/리서치 계열 수집기를 모두 실행. 실패해도 나머지는 계속. 반환: (items, 수집기별 상태)"""
-    from scrapers.hankyung_consensus import scrape_hankyung_consensus
-    from scrapers.generic_link_sites import scrape_generic_sites
-    from scrapers.sol_etf import scrape_sol_etf
-    from scrapers.kiwoom import scrape_kiwoom
-    from scrapers.kodex_time_tiger import scrape_kodex, scrape_time_etf, scrape_tiger_etf
-    from scrapers.ace_etf import scrape_ace_etf
-    from scrapers.myasset import scrape_myasset
-    from scrapers.hanaw import scrape_hanaw
-    from scrapers.miraeasset import scrape_miraeasset
+    """기사 수집. 기본은 네이버 뉴스(원문 링크 변환)만. 독립 사이트는 SITE_SCRAPERS=1 일 때만. 실패해도 나머지는 계속."""
     from scrapers.naver_news import scrape_naver_news
 
-    scrapers = [
-        ("한경 컨센서스", scrape_hankyung_consensus), ("직링크 11개 사이트", scrape_generic_sites),
-        ("SOL ETF", scrape_sol_etf), ("키움증권", scrape_kiwoom), ("KODEX", scrape_kodex),
-        ("TIME ETF", scrape_time_etf), ("TIGER ETF", scrape_tiger_etf), ("ACE ETF", scrape_ace_etf),
-        ("유안타증권", scrape_myasset), ("하나증권", scrape_hanaw), ("미래에셋증권", scrape_miraeasset),
-        ("네이버 뉴스(6개 언론사+속보)", scrape_naver_news),
-    ]
+    scrapers = [("네이버 뉴스(6개 언론사+속보)", scrape_naver_news)]
+    if SITE_SCRAPERS_ON:
+        from scrapers.hankyung_consensus import scrape_hankyung_consensus
+        from scrapers.generic_link_sites import scrape_generic_sites
+        from scrapers.sol_etf import scrape_sol_etf
+        from scrapers.kiwoom import scrape_kiwoom
+        from scrapers.kodex_time_tiger import scrape_kodex, scrape_time_etf, scrape_tiger_etf
+        from scrapers.ace_etf import scrape_ace_etf
+        from scrapers.myasset import scrape_myasset
+        from scrapers.hanaw import scrape_hanaw
+        from scrapers.miraeasset import scrape_miraeasset
+        scrapers += [
+            ("한경 컨센서스", scrape_hankyung_consensus), ("직링크 11개 사이트", scrape_generic_sites),
+            ("SOL ETF", scrape_sol_etf), ("키움증권", scrape_kiwoom), ("KODEX", scrape_kodex),
+            ("TIME ETF", scrape_time_etf), ("TIGER ETF", scrape_tiger_etf), ("ACE ETF", scrape_ace_etf),
+            ("유안타증권", scrape_myasset), ("하나증권", scrape_hanaw), ("미래에셋증권", scrape_miraeasset),
+        ]
     items, status = [], {}
     for label, fn in scrapers:
         try:
@@ -224,7 +271,6 @@ def main():
     if "--youtube-only" in args:
         return run_youtube_only(upload)
 
-    from scrapers.youtube import scrape_youtube
     from stock_prices import collect_stock_prices
     from telegram_digest import run_telegram_digest
     from pdf_triage import triage_pdfs
@@ -263,8 +309,13 @@ def main():
 
     # 2) 유튜브 (제목/링크 + 선택적 자막)
     try:
-        videos = scrape_youtube()
-        log.append(("유튜브 목록", f"OK {len(videos)}건"))
+        if YOUTUBE_ON:
+            from scrapers.youtube import scrape_youtube
+            videos = scrape_youtube()
+            log.append(("유튜브 목록", f"OK {len(videos)}건"))
+        else:
+            videos = []
+            log.append(("유튜브 목록", "꺼짐(YOUTUBE_ON=1 로 켬) - Claude Code가 담당"))
     except Exception as e:
         videos = []
         log.append(("유튜브 목록", f"실패: {e}"))
@@ -278,8 +329,11 @@ def main():
         write_transcript_excel(yt_new, transcript_path)
     annotate(yt_new, ("제목",), tickers)
     try:
-        from youtube_gemini import analyze
-        _r = {}; _t = __import__("threading").Thread(target=lambda: _r.update(r=analyze(yt_new)), daemon=True); _t.start(); _t.join(int(os.environ.get("GEMINI_BUDGET_SEC", "900"))); log.append(("유튜브 Gemini 분석", _r.get("r", "시간초과 또는 오류로 건너뜀")))
+        if yt_new:
+            from youtube_gemini import analyze
+            _r = {}; _t = __import__("threading").Thread(target=lambda: _r.update(r=analyze(yt_new)), daemon=True); _t.start(); _t.join(int(os.environ.get("GEMINI_BUDGET_SEC", "900"))); log.append(("유튜브 Gemini 분석", _r.get("r", "시간초과 또는 오류로 건너뜀")))
+        else:
+            log.append(("유튜브 Gemini 분석", "대상 없음(건너뜀)"))
     except Exception as e:
         log.append(("유튜브 Gemini 분석", f"실패: {type(e).__name__}: {str(e)[:80]}"))
         traceback.print_exc()
@@ -293,9 +347,16 @@ def main():
     tgs, pdf_rows, pdf_body, pdf_paths, pdf_hash = [], [], [], [], {}
     known = load_hashes()
     try:
-        msgs, pdf_raw = asyncio.run(asyncio.wait_for(run_telegram_digest(DOWNLOAD_DIR), int(os.environ.get("TELEGRAM_BUDGET_SEC", "900"))))
+        msgs, pdf_raw = [], []
+        try:
+            asyncio.run(asyncio.wait_for(run_telegram_digest(DOWNLOAD_DIR, msgs, pdf_raw), int(os.environ.get("TELEGRAM_BUDGET_SEC", "1200"))))
+        except asyncio.TimeoutError:   # 시간 초과여도 그때까지 모은 메시지·PDF는 버리지 않는다 (2026-11-10 전부 0건이 된 원인)
+            print(f"⚠️ 텔레그램 시간 초과 - 부분 결과 사용: 메시지 {len(msgs)}건, PDF {len(pdf_raw)}건")
+            msgs.reverse()
+            log.append(("텔레그램 시간 초과", f"부분 수집 메시지 {len(msgs)}건 / PDF {len(pdf_raw)}건"))
         pdf_paths, pdf_hash = filter_new_pdfs(pdf_raw, known)
-        log.append(("텔레그램", f"OK 메시지 {len(msgs)}건 / 새 PDF {len(pdf_paths)}건 (이미 처리한 PDF {len(pdf_raw) - len(pdf_paths)}건 제외)"))
+        _dd = len(getattr(filter_new_pdfs, "last_dropped", []))
+        log.append(("텔레그램", f"OK 메시지 {len(msgs)}건 / 새 PDF {len(pdf_paths)}건 (이미 처리한 PDF {len(pdf_raw) - len(pdf_paths) - _dd}건, 제목 유사 중복 {_dd}건 제외)"))
     except Exception as e:
         msgs = []
         log.append(("텔레그램", f"실패: {type(e).__name__}: {str(e)[:80]}"))
@@ -316,8 +377,12 @@ def main():
 
     # 4) 주가
     try:
-        stocks = collect_stock_prices()
-        log.append(("주가", f"OK {len(stocks)}종목"))
+        if os.environ.get("STOCKS_ON") == "1":
+            stocks = collect_stock_prices()
+            log.append(("주가", f"OK {len(stocks)}종목"))
+        else:
+            stocks = []
+            log.append(("주가", "꺼짐(STOCKS_ON=1 로 켬)"))
     except Exception as e:
         stocks = []
         log.append(("주가", f"실패: {e}"))
@@ -360,7 +425,9 @@ def main():
         last_run.write_text(date_label)
     if failed:
         print(f"\n❌ 업로드 실패 {len(failed)}건: {failed}")
-        sys.exit(1)
+        if not core_ok:   # 핵심 파일(후보목록·엑셀) 실패만 '실행 실패'. PDF 몇 개 실패는 해시를 기록하지 않아 다음 실행이 다시 올린다.
+            sys.exit(1)
+        print("⚠️ 핵심 파일은 업로드됨 - 실패한 PDF는 다음 실행에서 재시도")
     print(f"\n✅ 완료: {folder_name}")
 
 
