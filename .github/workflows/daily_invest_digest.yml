@@ -27,7 +27,7 @@ concurrency:
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 70
     permissions:
       contents: write   # state/ 및 processed_pdf_hashes.txt 커밋용
 
@@ -54,7 +54,7 @@ jobs:
           WINDOW_END: ${{ github.event.inputs.window_end }}
           # 자막 추출은 클라우드 IP가 차단되는 경우가 많아 기본 꺼짐. PC에서 `python main.py --youtube-only` 로 처리.
           ACTIONS_TRANSCRIPTS: '0'
-        run: GEMINI_BUDGET_SEC=120 timeout -s ABRT 2400 python -X faulthandler -u main.py
+        run: GEMINI_BUDGET_SEC=120 timeout -s ABRT 3300 python -X faulthandler -u main.py
 
       - name: Commit state (이미 처리한 항목/PDF 기록)
         if: always()

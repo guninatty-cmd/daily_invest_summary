@@ -408,8 +408,15 @@ def main():
     from drive_upload import upload_to_drive_via_gas
     targets = [txt_path, bodies_path, excel_path] + ([transcript_path] if transcript_path else []) + pdf_paths
     failed, ok_pdf_hashes = [], set()
-    for p in targets:
-        if upload_to_drive_via_gas(p, folder_name):
+    from concurrent.futures import ThreadPoolExecutor   # PDF가 100개를 넘는 날 순차 업로드가 40분 제한에 걸린 사례(2026-11-10) -> 병렬 업로드
+    core = targets[:len(targets) - len(pdf_paths)]
+    for p in core:   # 핵심 파일은 먼저, 순서대로
+        if not upload_to_drive_via_gas(p, folder_name):
+            failed.append(os.path.basename(p))
+    with ThreadPoolExecutor(max_workers=int(os.environ.get("UPLOAD_WORKERS", "4"))) as ex:
+        results = list(ex.map(lambda p: (p, upload_to_drive_via_gas(p, folder_name)), pdf_paths))
+    for p, ok in results:
+        if ok:
             if p in pdf_hash:
                 ok_pdf_hashes.add(pdf_hash[p])
         else:
