@@ -164,7 +164,7 @@ def one_line(text: str, n: int) -> str:
 def write_candidate_txt(path, window, arts, tgs, yts, pdf_rows, stocks):
     start, end = window
     L = [f"# 후보목록 | 수집구간 {start:%m/%d %H:%M} ~ {end:%m/%d %H:%M} KST",
-         "# 형식: ID|분류힌트|출처|제목  (전체 원문/링크는 엑셀의 같은 ID 행). 후보=Y 만 수록, 점수 높은 순.",
+         "# 형식: ID|분류힌트|출처|제목  (전체 원문/링크는 엑셀의 같은 ID 행; 기사 본문은 01_후보본문.txt). 후보=Y 만 수록, 점수 높은 순.",
          "# 읽기 원칙: 이 파일만 먼저 읽고, 본문이 꼭 필요한 항목만 ID로 엑셀에서 추가 조회할 것.", ""]
     used = 0
 
@@ -188,7 +188,7 @@ def write_candidate_txt(path, window, arts, tgs, yts, pdf_rows, stocks):
     Path(path).write_text("\n".join(L), encoding="utf-8")
 
 
-def write_candidate_bodies(path, window, tgs, yts, pdf_body, max_chars=70000):
+def write_candidate_bodies(path, window, tgs, yts, pdf_body, arts=None, max_chars=150000):
     """Claude가 엑셀 전체를 읽지 않도록, 후보의 '읽을 본문'만 모은 압축 파일."""
     start, end = window
     L = [f"# 후보본문 | 수집구간 {start:%m/%d %H:%M} ~ {end:%m/%d %H:%M} KST",
@@ -197,6 +197,12 @@ def write_candidate_bodies(path, window, tgs, yts, pdf_body, max_chars=70000):
     def top(rows, n):
         return sorted([r for r in rows if r.get("후보") == "Y"], key=lambda r: -float(r.get("점수") or 0))[:n]
 
+    L.append("## 기사 후보 본문 (언론사 원문 우선. 본문출처=네이버는 네이버 본문, 없음이면 제목만 있음)")
+    for a in top(arts or [], 45):
+        if a.get("본문"):
+            L.append(f"[{a['ID']}] {a['출처']} | {one_line(a['제목'], 90)} | 본문출처:{a.get('본문출처','')}")
+            L.append(one_line(a["본문"], 1500))
+    L.append("")
     L.append("## 텔레그램 후보 본문 (점수 상위)")
     for t in top(tgs, 40):
         L.append(f"[{t['ID']}] {t['채널']} | {one_line(t['내용'], 700)}")
@@ -230,7 +236,7 @@ def write_workbook(path, window, log_lines, arts, tgs, yts, pdf_rows, pdf_body, 
                 ["읽는 법", "후보=Y 이고 점수 높은 행만 읽는다. 후보=N 은 제외사유 확인용(읽지 않는다)."],
                 ["분류힌트", "규칙 기반 힌트일 뿐이며 최종 분류는 리포트 작성 시 확정"], ["", ""]] + [[k, v] for k, v in log_lines]
         _df(info, columns=["항목", "내용"]).to_excel(w, sheet_name="00_안내", index=False)
-        a_cols = ["ID", "후보", "점수", "분류힌트", "구분", "출처", "제목", "게시일", "링크", "제외사유"]
+        a_cols = ["ID", "후보", "점수", "분류힌트", "구분", "출처", "제목", "게시일", "링크", "본문", "본문출처", "제외사유"]
         _df(arts, columns=a_cols).to_excel(w, sheet_name="기사_리서치", index=False)
         t_cols = ["ID", "후보", "점수", "분류힌트", "시각", "채널", "내용", "제외사유"]
         _df(tgs, columns=t_cols).to_excel(w, sheet_name="텔레그램", index=False)
@@ -302,9 +308,17 @@ def main():
     log.append(("기사·리서치 정리", f"수집 {n0} → 구간밖 {dropped_old}건 제거 → 중복/이전 실행분 제거 후 {len(items)}건"))
     annotate(items, ("제목",), tickers)
     items.sort(key=lambda i: (i["후보"] != "Y", -i["점수"]))
+    try:   # 후보 기사 본문: 언론사 원문 페이지 우선(네이버 봇 차단), 실패 시 네이버 본문, 그래도 없으면 '없음'
+        from article_body import attach_article_bodies
+        body_stat = attach_article_bodies(items)
+        log.append(("기사 본문 수집(후보)", f"원문 {body_stat['원문']}건 / 네이버 본문 {body_stat['네이버']}건 / 없음 {body_stat['없음']}건"))
+        print(f"📰 기사 본문: {body_stat}")
+    except Exception as e:
+        log.append(("기사 본문 수집(후보)", f"실패: {type(e).__name__}: {str(e)[:80]}"))
+        traceback.print_exc()
     arts = []
     for n, it in enumerate(items, 1):
-        arts.append({"ID": f"A{n}", **{k: it.get(k, "") for k in ("후보", "점수", "분류힌트", "출처", "제목", "링크", "제외사유")},
+        arts.append({"ID": f"A{n}", **{k: it.get(k, "") for k in ("후보", "점수", "분류힌트", "출처", "제목", "링크", "제외사유", "본문", "본문출처")},
                      "구분": kind_of(it.get("출처", "")), "게시일": fmt_date(it.get("게시일")), "_lk": it.get("_lk", "")})
 
     # 2) 유튜브 (제목/링크 + 선택적 자막)
@@ -395,7 +409,7 @@ def main():
     write_workbook(excel_path, window, log, arts, tgs, yts, pdf_rows, pdf_body, stocks)
     write_candidate_txt(txt_path, window, arts, tgs, yts, pdf_rows, stocks)
     bodies_path = os.path.join(DOWNLOAD_DIR, "01_후보본문.txt")
-    write_candidate_bodies(bodies_path, window, tgs, yts, pdf_body)
+    write_candidate_bodies(bodies_path, window, tgs, yts, pdf_body, arts)
     cand = lambda rows: sum(r.get("후보") == "Y" for r in rows)
     print(f"\n📊 기사 {len(arts)}(후보 {cand(arts)}) | 텔레그램 {len(tgs)}(후보 {cand(tgs)}) | "
           f"유튜브 {len(yts)} | PDF {len(pdf_rows)}")
