@@ -10,6 +10,7 @@ from telethon.sessions import StringSession
 
 from common import KST, get_window
 from drive_upload import sanitize_filename
+import domestic_filter
 
 
 async def run_telegram_digest(download_dir: str = "downloads", messages=None, pdf_paths=None):
@@ -45,9 +46,16 @@ async def run_telegram_digest(download_dir: str = "downloads", messages=None, pd
 
                 if message.file and message.file.ext == '.pdf':
                     name = message.file.name or 'document.pdf'
+                    if domestic_filter.is_domestic_by_name(name, text):   # 국내 종목 리포트는 다운로드도 하지 않음
+                        domestic_filter.SKIPPED.append(name)
+                        continue
                     filepath = os.path.join(download_dir, f"[{clean_chat}] {sanitize_filename(name)}")
                     try:
                         await asyncio.wait_for(message.download_media(file=filepath), timeout=int(os.environ.get('PDF_DL_TIMEOUT_SEC', '90')))
+                        if domestic_filter.is_domestic_by_text(domestic_filter.first_page_text(filepath)):   # 첫 쪽에 국내 종목코드
+                            os.remove(filepath)
+                            domestic_filter.SKIPPED.append(name)
+                            continue
                         with open(filepath, 'rb') as fh:
                             h = hashlib.sha256(fh.read()).hexdigest()
                         if h in seen_hashes:      # 여러 채널에 재전달된 동일 PDF
