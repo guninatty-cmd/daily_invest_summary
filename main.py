@@ -356,6 +356,8 @@ def main():
             log.append(("텔레그램 시간 초과", f"부분 수집 메시지 {len(msgs)}건 / PDF {len(pdf_raw)}건"))
         pdf_paths, pdf_hash = filter_new_pdfs(pdf_raw, known)
         _dd = len(getattr(filter_new_pdfs, "last_dropped", []))
+        import domestic_filter
+        log.append(("국내 종목 리포트 제외", f"{len(domestic_filter.SKIPPED)}건 (다운로드 전/후 단서로 걸러냄)"))
         log.append(("텔레그램", f"OK 메시지 {len(msgs)}건 / 새 PDF {len(pdf_paths)}건 (이미 처리한 PDF {len(pdf_raw) - len(pdf_paths) - _dd}건, 제목 유사 중복 {_dd}건 제외)"))
     except Exception as e:
         msgs = []
