@@ -1,5 +1,5 @@
 """
-텔레그램 메시지 / PDF 수집 (수집 구간은 common.get_window: 어제 07:00 ~ 오늘 07:00 KST)
+텔레그램 메시지 / PDF 수집 (수집 구간은 common.get_window: 어제 00:00 ~ 오늘 00:00 KST)
 """
 import os
 import asyncio

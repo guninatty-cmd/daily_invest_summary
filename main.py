@@ -5,7 +5,7 @@
        python main.py --youtube-only   # (PC용) 유튜브 전날 영상 목록 + 자막 추출만 -> '{날짜}_유튜브_자막.xlsx'
        python main.py --no-upload      # 로컬 테스트: 업로드/상태저장 없이 파일만 생성
 
-수집 구간(전 수집기 공통): 어제 07:00 ~ 오늘 07:00 KST  (common.get_window 참고)
+수집 구간(전 수집기 공통): 어제 00:00 ~ 오늘 00:00 KST  (common.get_window 참고)
 노션 업로드는 제거되었다. 결과물은 엑셀 + 후보목록(txt) 이고, Claude가 이 파일을 읽어 리포트를 만든다.
 
 출력 파일 (downloads/ -> 드라이브 '{오늘}_주식리포트_모음' 폴더)
